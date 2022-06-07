@@ -1,0 +1,651 @@
+
+## NBA Linear Projections Model ##
+# Packages/Library
+library(readr)
+library(dplyr)
+library(plyr)
+library(class)
+library("DMwR")
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(ISLR)    
+library(knitr)   
+library(tree)    
+library(rpart) 
+library("rpart.plot")
+library("randomForest")
+library(gbm)
+library("leaps")
+library(e1071)
+library("ROCR")
+library("missForest")
+library(mice)
+library("VIM")
+library("pROC")
+library("tree")
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+library(stringr)
+library(lubridate)
+library(RODBC)
+library(stringdist)
+library(RPostgreSQL)
+library("xlsx")
+library("readxl")
+library(markovchain)
+library(reticulate)
+library(forecastML)
+
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+
+# NBA Data:
+NBA_data  <- dbGetQuery(conn, 'select * from nba.player_game_stats')
+nba_players<-dbGetQuery(conn, 'select * from nba.players')
+nba_team_name <- dbGetQuery(conn, 'select * from nba.teams')
+nba_teams<-dbGetQuery(conn, 'select * from nba.team_game_stats')
+
+# Cleaning up data:
+nba_players<-nba_players %>% dplyr::select(id,full_name,is_active)
+colnames(nba_players)<-c("Player_ID","player_name","is_active")
+nba_players$Player_ID<-as.double(nba_players$Player_ID)
+NBA_data<-left_join(NBA_data,nba_players)
+NBA_data$Name 
+
+#filtering specific players
+
+NBA_data$is_active <- ifelse(NBA_data$player_name == "DeMarcus Cousins", 1, NBA_data$is_active)
+NBA_data$is_active <- ifelse(NBA_data$player_name == "Brandon Goodwin", 1, NBA_data$is_active)
+NBA_data$is_active <- ifelse(NBA_data$player_name == "Brandon Williams", 1, NBA_data$is_active)
+NBA_data$is_active <- ifelse(NBA_data$player_name == "Lance Stephenson", 1, NBA_data$is_active)
+NBA_data$is_active <- ifelse(NBA_data$player_name == "Isaiah Thomas", 1, NBA_data$is_active)
+NBA_data$is_active <- ifelse(NBA_data$player_name == "Bismack Biyombo", 1, NBA_data$is_active)
+NBA_data$player_name <- ifelse(NBA_data$player_name == "Nah'Shon Hyland", "Bones Hyland", NBA_data$player_name)
+NBA_data$player_name <- ifelse(NBA_data$player_name == "Nicolas Claxton", "Nic Claxton", NBA_data$player_name)
+
+
+
+
+NBA_data<-NBA_data %>% dplyr::filter(NBA_data$is_active==1)
+NBA_data$GAME_DATE<-parse_date_time(NBA_data$GAME_DATE, orders = c("mdy", "dmy", "ymd"))
+
+# Top 5 BasketBall Stats Greater than 10 for these stats points, rebounds, assists, steals and blocks:
+NBA_data<-NBA_data %>% dplyr::mutate(points=ifelse(PTS>10,1,0))
+NBA_data<-NBA_data %>% dplyr::mutate(rebounds=ifelse(REB>10,1,0))
+NBA_data<-NBA_data %>% dplyr::mutate(assists=ifelse(AST>10,1,0))
+NBA_data<-NBA_data %>% dplyr::mutate(steals=ifelse(STL>10,1,0))
+NBA_data<-NBA_data %>% dplyr::mutate(blocks=ifelse(BLK>10,1,0))
+
+NBA_data<-NBA_data%>% dplyr::mutate(five_stats=points+rebounds+assists+steals+blocks)
+
+# Double Double and Triple Double:
+NBA_data<-NBA_data%>% dplyr::mutate(double_double=ifelse(five_stats==2,1,0))
+NBA_data<-NBA_data%>% dplyr::mutate(triple_double=ifelse(five_stats>2,1,0))
+
+# Fantasy Points Calculation:
+NBA_data<-NBA_data%>% dplyr::mutate(fantasy_points=PTS+AST*1.5+REB*1.25-0.5*TOV+2*STL+2*BLK+0.5*FG3M+1.5*double_double+1.5*triple_double)
+NBA_data<-NBA_data %>% distinct()
+
+# Creating Lag Function Creation:
+NBA_data <- NBA_data %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_scores1 = dplyr::lag(fantasy_points, n = 1, default = 0))
+  as.data.frame()
+
+NBA_data <- NBA_data %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_scores2 = dplyr::lag(fantasy_points, n = 2, default = 0)) %>% 
+  as.data.frame()
+
+NBA_data <- NBA_data %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_scores3 = dplyr::lag(fantasy_points, n = 3, default = 0)) %>% 
+  as.data.frame()
+
+NBA_data <- NBA_data %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_scores4 = dplyr::lag(fantasy_points, n = 4, default = 0)) %>% 
+  as.data.frame()
+
+NBA_data <- NBA_data %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_scores5 = dplyr::lag(fantasy_points, n = 5, default = 0)) %>% 
+  as.data.frame()
+
+NBA_data <- NBA_data %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_scores6 = dplyr::lag(fantasy_points, n = 6, default = 0)) %>% 
+  as.data.frame()
+
+previous_games <- NBA_data %>% dplyr::select(c(lag_scores1, lag_scores2, lag_scores3, lag_scores4, lag_scores5, lag_scores6))
+NBA_data$previous_6games_points <- apply(previous_games[,c(1:6)], 1, mean, na.rm=TRUE)
+
+
+previous_games <- NBA_data %>% dplyr::select(c(lag_scores1, lag_scores2, lag_scores3))
+NBA_data$previous_3games_points <- apply(previous_games[,c(1:3)], 1, mean, na.rm=TRUE)
+
+
+
+#NBA_data <- NBA_data %>%  mutate(previous_3games_points=(lag_scores1+lag_scores2+lag_scores3)/3)
+
+#NBA_data <- NBA_data %>%   mutate(previous_6games_points=(lag_scores1+lag_scores2+lag_scores3+lag_scores4+lag_scores5+lag_scores6)/6)
+
+##############################################################################################################################################################################################################################################################
+# MINUTES MODEL 
+#getting teams
+nba_team_name <- nba_team_name %>% dplyr:: select(id, abbreviation, full_name)
+colnames(nba_team_name)[1]<- 'Team_ID'
+nba_teams$Team_ID <- as.double(nba_teams$Team_ID)
+nba_teams <- left_join(nba_teams, nba_team_name)
+nba_teams$GAME_DATE<-parse_date_time(nba_teams$GAME_DATE, orders = c("mdy", "dmy", "ymd"))
+
+NBA_Minsdata<- NBA_data 
+NBA_Minsdata <- NBA_Minsdata %>% dplyr::filter(GAME_DATE > as.Date('2008-01-01'))
+NBA_Minsdata <- NBA_Minsdata %>%
+  separate(MATCHUP, into =c('abbreviation', 'vs', 'Team2'),sep = ' ')
+NBA_Minsdata <- left_join(NBA_Minsdata, nba_team_name)
+
+
+# Career avg mins
+CarAvgMins <- aggregate(NBA_Minsdata$MIN, by= list(NBA_Minsdata$player_name), FUN = mean)
+colnames(CarAvgMins)[1]<- "player_name"
+NBA_Minsdata <- left_join(NBA_Minsdata, CarAvgMins)
+colnames(NBA_Minsdata)[51]<- "CarAvgMins"
+
+#laging 5match min avg 
+NBA_Minsdata <- NBA_Minsdata %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_min1 = dplyr::lag(MIN, n = 1, default = 0)) %>% 
+  as.data.frame()
+
+NBA_Minsdata <- NBA_Minsdata %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_min2 = dplyr::lag(MIN, n = 2, default = 0)) %>% 
+  as.data.frame()
+
+NBA_Minsdata <- NBA_Minsdata %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_min3 = dplyr::lag(MIN, n = 3, default = 0)) %>% 
+  as.data.frame()
+
+NBA_Minsdata <- NBA_Minsdata %>%   
+  arrange(GAME_DATE) %>%  group_by(Player_ID) %>%
+  dplyr::mutate(lag_min4 = dplyr::lag(MIN, n = 4, default = 0)) %>% 
+  as.data.frame()
+
+NBA_Minsdata <- NBA_Minsdata %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_min5 = dplyr::lag(MIN, n = 5, default = 0)) %>% 
+  as.data.frame()
+
+
+
+fivegameminavg <- NBA_Minsdata %>% dplyr::select(c(lag_min1, lag_min2, lag_min3, lag_min4, lag_min5))
+NBA_Minsdata$FiveGameMinAvg <- apply(fivegameminavg, 1, mean, na.rm=TRUE)
+
+summary(nba_players)
+
+
+#TeamsPlaying
+nba_teams <- nba_teams %>% filter(GAME_DATE>= as.Date("2015-11-1"))
+TeamsPlaying <- nba_teams %>% 
+  separate(MATCHUP, into =c('Team1', 'vs', 'Team2'),sep = ' ')
+
+Team2id <- TeamsPlaying %>% dplyr::select(Team2)
+colnames(Team2id)[1] <- 'abbreviation'
+Team2id <- left_join(Team2id, nba_team_name)
+colnames(Team2id)[1] <- 'Team2'
+colnames(Team2id)[2]<- 'Team2ID'
+Team2id <- Team2id %>% dplyr:: select(-full_name)
+TeamsPlaying <- inner_join(TeamsPlaying, Team2id, by="Team2")
+TeamsPlaying <- TeamsPlaying %>% distinct()
+
+TeamsPlaying <- TeamsPlaying %>% mutate(winner = ifelse(WL== 'W', Team_ID, Team2ID) )
+TeamsPlaying <- TeamsPlaying %>% mutate(loser = ifelse(WL== 'L', Team_ID, Team2ID) )
+TeamsPlaying <- TeamsPlaying %>% dplyr:: select(GAME_DATE, winner, loser)
+
+library(EloRating)
+res <- elo.seq(winner = TeamsPlaying$winner, loser = TeamsPlaying$loser, Date = TeamsPlaying$GAME_DATE, runcheck = FALSE)
+summary(res)
+elo_ratings_data<-as.data.frame(extract_elo(res))
+elo_ratings_data <- tibble::rownames_to_column(elo_ratings_data, "Team")
+colnames(elo_ratings_data)[2]<-"Elo_rating"
+colnames(elo_ratings_data)[1]<-"Team_ID"
+elo_ratings_data$Team_ID <- as.double(elo_ratings_data$Team_ID)
+elo_ratings_data <- left_join(elo_ratings_data, nba_teams)
+elo_ratings_data <- elo_ratings_data %>% select(Elo_rating, full_name)
+elo_ratings_data <- elo_ratings_data %>% distinct()
+
+NBA_Minsdata <- left_join(NBA_Minsdata, elo_ratings_data)
+
+#days off since last game
+NBA_Minsdata$GAME_DATE <- as.Date(NBA_Minsdata$GAME_DATE)
+NBA_Minsdata$GAME_DATE <- as.double(NBA_Minsdata$GAME_DATE)
+NBA_Minsdata <- NBA_Minsdata %>%   
+  arrange(GAME_DATE) %>%
+  group_by(Player_ID) %>%
+  dplyr::mutate(lag_date1 = dplyr::lag(GAME_DATE, n = 1, default = 0)) %>% 
+  as.data.frame()
+NBA_Minsdata$GAME_DATE <- as.Date(NBA_Minsdata$GAME_DATE)
+NBA_Minsdata$lag_date1 <- as.Date(NBA_Minsdata$lag_date1)
+NBA_Minsdata <- NBA_Minsdata %>% dplyr::mutate(DaysOff = GAME_DATE - lag_date1)
+NBA_Minsdata <- NBA_Minsdata %>%
+  separate(DaysOff, into =c('DaysOff', 'x'),sep = ' ')
+NBA_Minsdata <- NBA_Minsdata[NBA_Minsdata$lag_date1 != as.Date('1970-01-01'),]
+NBA_Minsdata$DaysOff <- as.double(NBA_Minsdata$DaysOff)
+
+#oponent elo rating
+opp_elo_rating <- left_join(nba_team_name, elo_ratings_data)
+colnames(opp_elo_rating)[2] <- "Team2"
+NBA_Minsdata <- inner_join(NBA_Minsdata, opp_elo_rating, by="Team2") 
+colnames(NBA_Minsdata)[colnames(NBA_Minsdata) =='Elo_rating.y' ] <- "OppositionEloRating"
+colnames(NBA_Minsdata)[colnames(NBA_Minsdata) =='full_name.y' ] <- "OpponentTeamName"
+colnames(NBA_Minsdata)[colnames(NBA_Minsdata) =='full_name.x' ] <- "TeamName"
+colnames(NBA_Minsdata)[colnames(NBA_Minsdata) =='Elo_rating.x' ] <- "TeamEloRating"
+
+#Filtering for low amount of games
+#NBA_Minsdata1 <- NBA_Minsdata %>% 
+#  dplyr::group_by(Player_ID, .groups = "keep") %>% 
+#  dplyr:: summarise(groups = "keep", 
+#                    GamesPlayed = n()) %>%
+#  dplyr:: ungroup()
+#NBA_Minsdata1 <- NBA_Minsdata1 %>% select(-contains("group"))
+#NBA_Minsdata <- left_join(NBA_Minsdata, NBA_Minsdata1)
+#NBA_Minsdata <- NBA_Minsdata %>% dplyr:: filter(GamesPlayed > 5)
+
+
+#opponents adjusted model
+
+
+colnames(NBA_Minsdata)[5]<- 'Team'
+colnames(NBA_Minsdata)[7]<- 'Opponent'
+team_opp_adj <- NBA_Minsdata %>% dplyr::select(Game_ID,GAME_DATE,Team,Opponent,WL,PTS)%>% dplyr::filter(GAME_DATE>=as.Date("2021-10-19"))
+team_opp_adj$PTS<-as.numeric(team_opp_adj$PTS)
+team_opp_adj<-team_opp_adj %>% dplyr::mutate(season=year(GAME_DATE))
+average_point_scored_team<-team_opp_adj %>% dplyr::select(Team,PTS) %>% dplyr::group_by(Team) %>%
+  summarise_each(mean) %>% na.omit()
+colnames(average_point_scored_team)[2]<-"PTS_scored"
+average_point_conceded_team<-team_opp_adj %>% dplyr::select(Opponent,PTS) %>% dplyr::group_by(Opponent) %>%
+  summarise_each(mean) %>% na.omit()
+colnames(average_point_conceded_team)<-c("Team","PTS_conceded")
+team_opp_adj<-left_join(team_opp_adj,average_point_scored_team)
+team_opp_adj<-left_join(team_opp_adj,average_point_conceded_team)
+team_opp_adj<-team_opp_adj %>% mutate(team_offensive = PTS-PTS_scored)
+team_opp_adj<-team_opp_adj %>% mutate(team_defensive = PTS_conceded-PTS)
+team_offensive<-team_opp_adj %>% dplyr::select(Team,Opponent,team_offensive)
+team_offensive<-team_offensive %>% dplyr::group_by(Team,Opponent) %>% summarise_each(sum)
+team_defensive<-team_opp_adj %>% dplyr::select(Team,Opponent,team_defensive)
+team_defensive<-team_defensive %>% dplyr::group_by(Team,Opponent) %>% summarise_each(sum)
+colnames(team_defensive)<-c("Opponent","Team","team_defensive")
+team_opponent_adjustment<-left_join(team_offensive,team_defensive)
+
+NBA_Minsdata <- left_join(NBA_Minsdata ,team_opponent_adjustment)
+
+
+
+
+
+#exponentially smoothing career avg
+#library(fpp2)
+#library(tidyverse)
+#exponentially_smoothed_data<-data.frame()
+#source("C:\\Users\\aashu\\Downloads\\Wicky R files\\R files\\Sport Tech Daily Functions.R", echo=TRUE)
+#colnames(NBA_Minsdata)[30]<-"Player"
+#player_names<-NBA_Minsdata %>% dplyr::select(Player) %>% distinct()
+#player_names<-player_names$Player
+##Player<-NBA_Minsdata %>% dplyr::filter(Player==player_names[1]) %>% dplyr::arrange()
+#Player<-Player %>% na.omit()
+#stat_exp<-as.numeric(team[,10])
+#a<-bestalpha(stat_exp)
+#exp_data<-expsmooth(stat_exp,alpha = a)
+#exp_data<-exp_data %>% dplyr::select(-Actual)
+#colnames(exp_data)<-paste0(colnames(team)[10],"_expsmooth")
+#exp_team<-cbind(team,exp_data)
+#for (i in 11:27) {
+# team<-NBA_Minsdata %>% dplyr::filter(Team==team_names[1]) %>% dplyr::arrange()
+#team<-team %>% na.omit()
+#stat_exp<-as.numeric(team[,i])
+#a<- bestalpha(stat_exp)
+#exp_data<-expsmooth(stat_exp,alpha = a)
+#exp_data<-exp_data %>% dplyr::select(-Actual)
+#colnames(exp_data)<-paste0(colnames(team)[i],"_expsmooth")
+#exp_team<-cbind(exp_team,exp_data)
+#}
+#exponentially_smoothed_data<-exp_team
+#for (k in 2:length(team_names)) {
+# team<-NBA_Minsdata %>% dplyr::filter(Team==team_names[k]) %>% dplyr::arrange()
+#  team<-team %>% na.omit()
+#  stat_exp<-as.numeric(team[,10])
+#  a<-bestalpha(stat_exp)
+#  exp_data<-expsmooth(stat_exp,alpha = a)
+#  exp_data<-exp_data %>% dplyr::select(-Actual)
+#  colnames(exp_data)<-paste0(colnames(team)[10],"_expsmooth")
+#  exp_team<-cbind(team,exp_data)
+#  for (i in 11:27) {
+#    team<-NBA_Minsdata %>% dplyr::filter(Team==team_names[k]) %>% dplyr::arrange()
+#    a<-bestalpha(stat_exp)
+#
+#        colnames(exp_data)<-paste0(colnames(team)[i],"_expsmooth")
+#    exp_team<-cbind(exp_team,exp_data)
+#  }
+#  exponentially_smoothed_data<-rbind(exponentially_smoothed_data,exp_team)
+#}
+
+
+#Train Test
+
+before_data<-read.csv("before.csv") 
+before_data <- before_data %>% dplyr:: select(-Position)
+before_data <- before_data %>% distinct()
+ProjectionsTable<-read.csv("ProjectionTable.csv") 
+colnames(NBA_Minsdata)[colnames(NBA_Minsdata)== "player_name"]<- "Name"
+colnames(NBA_Minsdata)[colnames(NBA_Minsdata)== "Player_ID"]<- "Player.ID"
+
+NBA_Minsdata <- NBA_Minsdata %>%
+  separate(Name, into =c('FirstName', 'LastName', 'Title'),sep = ' ')
+NBA_Minsdata <- NBA_Minsdata %>% dplyr::select(-Title)
+NBA_Minsdata <-NBA_Minsdata %>% dplyr:: mutate(Name = paste(NBA_Minsdata$FirstName, NBA_Minsdata$LastName, sep = " ")) 
+
+filteredMinsData <- NBA_Minsdata %>% filter(Name %in% ProjectionsTable$Name)
+
+train <- NBA_Minsdata
+# Generaliased linear model
+
+
+linear_model1 <- lm(MIN ~ FiveGameMinAvg + CarAvgMins + DaysOff + OppositionEloRating ,data = train)
+summary(linear_model1)
+predictions <- predict(linear_model1, filteredMinsData)
+Predictions <- data.frame(filteredMinsData, predictions)
+comparision <- Predictions %>% select(MIN, predictions)
+comparision <- comparision %>% mutate(Residuals = MIN-predictions)
+accuracy <- comparision %>% filter(Residuals >= -3 & Residuals <= 3)
+
+
+PlayerHighestMins <- Predictions %>% dplyr:: group_by(Player.ID) %>% dplyr:: summarise_at(vars(predictions), list(name= max))
+colnames(PlayerHighestMins)[1] <- "Player_ID" 
+colnames(PlayerHighestMins)[2] <- "predictions"
+
+NBA_data <- left_join(NBA_data, PlayerHighestMins)  
+
+
+
+NBA_data <- NBA_data %>% distinct()
+
+#############################################################################################################################################################################################################
+
+#AvgPoints <- NBA_data %>% dplyr :: group_by(Player_ID) %>% dplyr:: summarise_at(vars(PTS), list(AvgPoints = mean))
+#NBA_data <- left_join(NBA_data, AvgPoints)
+
+#AvgAssist <-  NBA_data %>% dplyr :: group_by(Player_ID) %>% dplyr:: summarise_at(vars(AST), list(AvgAssits = mean))
+#NBA_data <- left_join(NBA_data, AvgAssist)
+
+
+#AvgRebound <-  NBA_data %>% dplyr :: group_by(Player_ID) %>% dplyr:: summarise_at(vars(REB), list(AvgRebound = mean))
+#NBA_data <- left_join(NBA_data, AvgRebound)
+
+
+#AvgTurnover <-  NBA_data %>% dplyr :: group_by(Player_ID) %>% dplyr:: summarise_at(vars(TOV), list(AvgTurnover = mean))
+#NBA_data <- left_join(NBA_data, AvgTurnover)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#################################################################################################################################################################################################################################################################
+
+train<-NBA_data
+
+
+# Order the data based on dates and player stats:
+career_average<-train %>% select(Player_ID,lag_scores1) %>% na.omit()
+career_average<- career_average %>% group_by(Player_ID) %>% summarise_each(mean)
+colnames(career_average)[2]<-"career_average_points"
+
+train<-left_join(train,career_average)
+NBA_data<-train
+# test<-left_join(te
+
+
+
+
+before_data<-read.csv("before.csv") 
+before_data<- before_data %>% dplyr:: filter(Playing.Status != "OUT")
+ProjectionsTable<-read.csv("ProjectionTable.csv") 
+
+colnames(NBA_data)[colnames(NBA_data)== "player_name"]<- "Name"
+colnames(NBA_data)[colnames(NBA_data)== "Player_ID"]<- "Player.ID"
+
+# Filtering the Data Based on the teams:
+
+NBA_data <- NBA_data %>%
+  separate(Name, into =c('FirstName', 'LastName', 'Title'),sep = ' ')
+NBA_data <- NBA_data %>% dplyr::select(-Title)
+NBA_data <-NBA_data %>% dplyr:: mutate(Name = paste(NBA_data$FirstName, NBA_data$LastName, sep = " ")) 
+
+
+filtered_data<-NBA_data %>% filter(Name %in% before_data$Name)
+filtered_data<-filtered_data %>% group_by(Name) %>% top_n(1,as.Date(GAME_DATE))
+
+# Simple Linear Regression Model:
+NBA_data<-anti_join(NBA_data,filtered_data)
+NBA_data <- NBA_data %>% distinct()
+
+
+linear_model<-lm(fantasy_points~ predictions + previous_3games_points +career_average_points + previous_6games_points, data=NBA_data)
+summary(linear_model)
+
+
+
+
+
+# Projections for Players:
+Projections <- predict(linear_model ,newdata=filtered_data)
+
+projections<-data.frame(filtered_data,Projections)
+
+
+
+projections<-projections %>% dplyr::select(Name,Projections)
+
+#projections <- projections %>% dplyr:: mutate(Projections1 = ifelse(Projections < 1, 1, Projections))
+
+
+
+##############################################################################################################################################################
+#predicting points scored by out players using original model
+  
+outplayers <- read.csv("before.csv")
+outplayers <- outplayers  %>% dplyr:: filter(Playing.Status == "OUT")
+
+outplayers1 <-NBA_data %>% filter(Name %in% outplayers$Name)
+outplayers1 <-outplayers1 %>% group_by(Name) %>% top_n(1,as.Date(GAME_DATE))
+outplayers <- predict(linear_model, newdata= outplayers1)
+outplayers <- data.frame(outplayers1, outplayers)
+team <- read.csv("DFS_NBA_projections.csv")
+team <- team %>% dplyr:: select(Name, Team)
+outplayers <- left_join(outplayers, team)
+colnames(outplayers)[51]<- "Projections"
+
+projections1 <- data.frame(filtered_data,Projections)
+projections1 <- projections1 %>% na.omit()
+projections1 <- projections1 %>% separate(MATCHUP, into =c('Team', 'vs', 'Opponent'),sep = ' ')
+GroupedMins <-  projections1 %>% dplyr:: group_by(Team) %>% dplyr:: summarise(TotalMins = sum(predictions))
+outplayers <- left_join(outplayers, GroupedMins)
+outplayers <- outplayers %>% dplyr:: mutate(adjustedminutes = 240*predictions/TotalMins)
+outplayers <- outplayers %>% dplyr:: mutate(Pointstoallocate = predictions/240 * Projections) 
+outplayers <- outplayers %>% dplyr:: select(-VIDEO_AVAILABLE)
+outplayers <- outplayers %>% separate(MATCHUP, into =c('Team', 'vs', 'Opponent'),sep = ' ')
+PointsToAllocatePerTeam <-  outplayers %>% dplyr::group_by(Team) %>% dplyr:: summarise(Pointstoallocate = sum(Pointstoallocate))
+
+
+
+
+
+projections1 <- left_join(projections1, PointsToAllocatePerTeam)
+projections1 <- projections1 %>% replace(is.na(.), 0)
+projections1 <- projections1 %>% mutate( percentageofminsplayed = predictions/240 )
+projections1 <- projections1 %>% mutate( numbertoadd = Pointstoallocate*percentageofminsplayed)
+projections1 <- projections1 %>% mutate(AdjustedProjections = Projections + numbertoadd)
+
+
+projections <- projections1 %>% dplyr:: select(Name,AdjustedProjections)
+colnames(projections)[2]<- "Projections" 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+####################################################################################################################################################################
+
+projections <- projections %>% dplyr:: mutate(Projections1 = ifelse(Projections < 1, 1, Projections))
+
+projections <- projections %>% dplyr:: select(-Projections)
+projections <- projections %>% distinct()
+
+
+colnames(projections)[2] <- "projections"
+
+data_complete<-left_join(ProjectionsTable,projections) 
+data_complete<-data_complete %>% dplyr::select(-Projection)
+colnames(data_complete)[12]<-"Projection"
+
+data_complete<-data_complete %>% mutate(Date=Sys.Date())
+write.csv(data_complete,file="DFS_NBA_projections.csv")
+
+#########################################################################################
+
+data_complete<-read.csv("DFS_NBA_projections.csv")
+data_complete$Projection[is.na(data_complete$Projection)]<-1
+
+
+
+# setwd("~/Desktop/STD CURRENT WORK/DFS T20/After Files")
+# complete_csv_data <-list.files(pattern = "*.csv") %>% map_df(~read_csv(.))
+# complete_csv_data<-complete_csv_data %>% dplyr::select(Name,Score,`Selected %`)
+# complete_csv_data<-complete_csv_data %>% group_by(Name)%>% summarise_each(mean)
+# 
+# data_complete<-left_join(data_complete,complete_csv_data)
+# 
+data_complete<-data_complete %>% mutate(value=Price/Projection)
+data_complete <- data_complete %>% mutate(value = ifelse(Projection < 8, 1, data_complete$value))
+DataToCluster <- data_complete %>% dplyr:: filter(value != 1)
+cluster_data<-data_complete %>% dplyr:: filter(Projection > 8) %>% dplyr::select(value)
+
+
+km.res_data <- kmeans(cluster_data, 10)
+
+cluster_data<-data.frame(DataToCluster$Name,DataToCluster$value,km.res_data$cluster)
+colnames(cluster_data)<-c("Name","value","cluster_name")
+rating_cluster<-cluster_data %>% dplyr::select(-Name)
+rating_cluster<-rating_cluster%>% group_by(cluster_name) %>% summarise_each(mean)
+
+rating_cluster<-rating_cluster[order(rating_cluster$value, decreasing = TRUE), ]
+
+rating_cluster<-data.frame(rating_cluster,c(1:10))
+rating_cluster<-rating_cluster %>% dplyr::select(-value)
+
+cluster_data<-left_join(cluster_data,rating_cluster)
+cluster_data<-cluster_data %>% dplyr::select(-cluster_name,-value)
+colnames(cluster_data)[2]<-"value"
+
+data_complete<-data_complete %>% dplyr::select(-value)
+
+data_complete<-left_join(data_complete,cluster_data)
+data_complete <- data_complete %>% mutate(value = ifelse(Projection < 8, 1, data_complete$value))
+# 
+# data_complete$Score[is.na(data_complete$Score)]<-0
+# data_complete$`Selected %`[is.na(data_complete$`Selected %`)]<-0
+data_complete<-data_complete %>% dplyr::select(-X)
+data_complete<-data_complete %>% distinct()
+data_complete$Projection<-as.numeric(data_complete$Projection)
+
+# data_complete <- data_complete %>% mutate_all(na_if,"")
+# data_complete<-data_complete %>% dplyr::mutate(Position=ifelse(is.na(Position2),Position,paste0(Position,"/",Position2)))
+
+data_complete<-data_complete %>% dplyr::mutate(Match=ifelse(Team>Opponent,paste0(Team," vs ",Opponent),paste0(Opponent," vs ",Team)))
+
+data_complete$Status[is.na(data_complete$Status)]<-"ESTIMATED STARTER"
+data_complete<-data_complete %>% dplyr::filter(Status != "OUT OF GAME")
+
+previous_game_averages<-filtered_data %>% dplyr::select(Name,previous_3games_points,previous_6games_points)
+
+data_complete<-left_join(data_complete,previous_game_averages)
+data_complete<- data_complete %>% mutate(previous_3games_points1 = ifelse(Projection == 1, 0, data_complete$previous_3games_points))
+data_complete<- data_complete %>% mutate(previous_6games_points1 = ifelse(Projection == 1, 0, data_complete$previous_6games_points))
+data_complete<- data_complete %>% dplyr:: select(-previous_3games_points,-previous_6games_points)
+colnames(data_complete)[16] <- "previous_3games_points"
+colnames(data_complete)[17] <- "previous_6games_points"
+data_complete$Projection <- ifelse(data_complete$Name == "Olivier Sarr", 13, data_complete$Projection)
+data_complete$Projection <- ifelse(data_complete$Name == "Jalen Suggs", 25, data_complete$Projection)
+data_complete$Projection <- ifelse(data_complete$Name == "Brandon Williams", 26.2, data_complete$Projection)
+
+date <- Sys.time()
+date <- data.frame(date)
+
+
+dbWriteTable(conn, c('nba','NBAStatBibleDate'), date, overwrite = TRUE)
+
+
+dbRemoveTable(conn, c("nba","DFS_projections")) # DONT RUN IF MULTIPLE GAMES IN A DAY
+dbWriteTable(conn, c("nba","DFS_projections"), data_complete,append=TRUE,row.names=FALSE)
+
+
