@@ -1,0 +1,749 @@
+detach("package:plyr", unload=TRUE)
+### Cricsheet Scraper #####
+# Packages/Libraries:
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+
+library(stringr)
+library(lubridate)
+library(RODBC)
+library(stringdist)
+library(RPostgreSQL)
+library(RJSONIO)
+library(tibble)
+library(rlang)
+library(data.table)
+library(tidyverse)
+library(stringr)
+setwd("C:/Users/aashu/Downloads/People")
+source("C:/Users/aashu/Downloads/Wicky R files/Sport Tech Daily Functions.R")
+options(stringsAsFactors = FALSE)
+
+# Downloading JSON files for 2021:
+#zip.url <- "https://cricsheet.org/downloads/recently_added_7_json.zip"
+#dir <- getwd()
+#zip.file <- "recently_added_2_json.zip"
+#zip.combine <- as.character(paste(dir, zip.file, sep = "/"))
+#download.file(zip.url, destfile = zip.combine, method="curl", extra="-k")
+#unzip(zip.file)
+
+player_ids_match_up<-read.csv("people.csv")
+player_ids_match_up<-player_ids_match_up %>% dplyr::select(unique_name,key_cricinfo)
+
+#MatchID 2021 Missing:
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+
+CGameTable        <- dbGetQuery(conn, 'select * from "Game"') %>% dplyr::select(-row.names)
+# Getting on the BBB Table Data:
+BallByBallTable        <- dbGetQuery(conn, 'select * from "BallByBall"') %>% dplyr::select(-row.names)%>% distinct()
+
+CGameTable<-CGameTable %>% filter(StartDate > as.Date("2017-12-31"))
+
+Team <- dbGetQuery(conn, 'select * from cricketdb.team')
+Team <- Team %>% distinct()
+League <- dbGetQuery(conn, 'select * from cricketdb.League')
+League <- League %>% dplyr:: distinct()
+venue <-dbGetQuery(conn, 'select * from cricketdb.venue')
+
+
+
+
+league_id <-c(8044,  8654,  8653,  8679,  8048,  8053,  8623, 18997,
+              18783, 18812, 18649, 18808, 19123, 19052, 19059, 18913,
+              18645, 18664, 19062, 19333, 19386, 19315, 19452, 19555,
+              19504, 19297, 19242, 19240, 19312, 19406, 19309, 19587,
+              19607, 19322, 19732, 19286, 19282, 19754, 19781, 17948,
+              19495, 18074, 17952, 10883, 18494, 18569, 18065, 18527,
+              18597, 18732, 18610, 18544, 18025, 18018, 18021, 18633,
+              18712, 18629, 18652, 18886, 18694, 18602, 18879, 18693,
+              18902)
+
+#MatchIDs_Cgame<-CGameTable %>% dplyr::select(MatchID)
+#MatchIDs_bbb <- na.omit(as.data.frame(dbGetQuery(conn, 'select "MatchID" from "BallByBall"'))) %>% distinct()
+#missing_matchids<-anti_join(MatchIDs_Cgame,MatchIDs_bbb)
+#missing_matches<-missing_matchids
+
+# Combining JSON files for 2021 to get BallByBall Data:
+#missing_matchids$MatchID <- substring(missing_matchids$MatchID,1,7)
+
+#files<-paste0(missing_matchids$MatchID[1],".json")
+
+###################################################################################
+setwd("C:/Users/aashu/Downloads")
+FilesInFolder <- read.table(text = list.files("Cricsheet Data", 
+                             include.dirs= FALSE, 
+                             full.names=TRUE), 
+                  sep = "/")
+FilesInFolder <- FilesInFolder %>% dplyr:: select(V2)
+
+FilesInFolder <- FilesInFolder %>% 
+  separate(V2, c("GameID", "col2"), "[.]")
+
+FilesInFolder <- FilesInFolder %>% dplyr:: select(GameID)
+FilesInFolder <- FilesInFolder %>% dplyr:: filter(GameID != "desktop")
+
+BBB <- BallByBallTable %>% dplyr:: select(GameID)
+
+FilesInFolder$GameID <- as.double(FilesInFolder$GameID)
+
+missing_matchidsNEW <- anti_join(FilesInFolder, BBB)
+colnames(missing_matchidsNEW)[1] <- "MatchID"
+
+missing_matchidsNEW$MatchID <- substring(missing_matchidsNEW$MatchID,1,7)
+missing_matchidsNEW <- na.omit(missing_matchidsNEW)
+
+files<-paste0(missing_matchidsNEW$MatchID[1],".json")
+FilesInFolder <- na.omit(FilesInFolder)
+
+
+##################################################################################
+setwd("C:/Users/aashu/Downloads/Cricsheet Data")
+
+for (i in 2:length(missing_matchidsNEW$MatchID)) {
+  j<-paste0(missing_matchidsNEW$MatchID[i],".json", sep='')
+  files<-c(files,j)
+  
+}
+
+
+# Load the package required to read JSON files.
+library("rjson")
+
+fncols <- function(data, cname) {
+  add <-cname[!cname%in%names(data)]
+
+  if(length(add)!=0) data[add] <- NA
+  data
+}
+
+
+complete_match_data <- data.frame()
+
+# Load the package required to read JSON files.
+library("rjson")
+
+# Dataset to Manipulate:
+create_ball_by_ball = function(json_file, labels.df = c()) {
+  data_raw <- enframe(unlist(json_file))
+  balls_data_raw <- data_raw %>% dplyr::filter(substring(name, 1, 13) == 'innings.overs')
+  start_balls <- which(balls_data_raw[,'name'] == 'innings.overs.deliveries.batter')
+  
+  if (length(labels.df) == 0) {
+    labels.df <- unique(balls_data_raw$name)
+  }
+  
+  ball_by_ball <- data.frame(matrix(ncol=length(labels.df),nrow=0))
+  
+  
+  for (i in 1:(length(start_balls) - 1)) {
+    names <- balls_data_raw[(start_balls[i]-1):(start_balls[i+1]-2),]$name
+    row <- data.frame(balls_data_raw[(start_balls[i]-1):(start_balls[i+1]-2),]$value)
+    
+    temp_df <- data.frame(matrix(ncol=length(labels.df), nrow=1))
+    colnames(temp_df) <- labels.df
+    
+    for (j in 1:length(names)) {
+      temp_df[,names[j]] <- row[j,1]
+    }
+    #######################################################################################################################################################################
+    # Turns out the fielders name kept getting attributed to the next ball instead of the previous ball. I think I've fixed it
+    # But will be something to monitor.
+    test_name <- balls_data_raw[start_balls[i+1]-1,]$name
+    if (test_name != 'innings.overs.deliveries.runs.total' & test_name != 'innings.overs.over') {
+      temp_df[,test_name] <- balls_data_raw[start_balls[i+1]-1,]$value
+    }
+    #######################################################################################################################################################################
+    ball_by_ball <- rbind(ball_by_ball, temp_df)
+  }
+  #  Adding Last Ball in the pbp:
+  last_ball_seq<-seq(from = nrow(balls_data_raw)-5, to = nrow(balls_data_raw))
+  last_ball<- balls_data_raw[last_ball_seq,]
+  last_ball<-as.data.frame(last_ball)
+  last_ball<-last_ball %>% spread(name, value)
+  names<-colnames(ball_by_ball)
+  last_ball<-fncols(last_ball,names)
+  ball_by_ball <- rbind(ball_by_ball, last_ball)
+  
+  #######################################################################################################################################################################
+  # Correction because the fielder still goes on to the next line. If there's two catches in a row, we might be in trouble.
+  # Most likely not though, because that line gets overwritten with the correct information.
+  ball_by_ball$innings.overs.deliveries.wickets.fielders.name[is.na(ball_by_ball$innings.overs.deliveries.wickets.kind)] <- NA
+  ball_by_ball$innings.overs.deliveries.wickets.player_out[is.na(ball_by_ball$innings.overs.deliveries.wickets.kind)] <- NA
+  #######################################################################################################################################################################
+  
+  return(ball_by_ball)
+}
+
+setwd("C:/Users/aashu/Downloads/Cricsheet Data")
+for (k in 1:nrow(missing_matchidsNEW)) {
+tryCatch({
+
+  # Give the input file name to the function.
+  json_file <- rjson::fromJSON(file = paste(missing_matchidsNEW[k, 1], '.json',sep=''))
+  
+  # Creating the Dataset Required:
+  substrRight <- function(x, n){
+    substr(x, nchar(x)-n+1, nchar(x))
+  }
+  
+  league_name <- json_file$info$event$name
+  game_id<-missing_matchidsNEW[k,1]
+  league_id <- League %>% dplyr:: filter(league == league_name) %>% dplyr:: select(leagueid)
+  match_id<- paste(game_id,league_id, sep = " ")
+  
+  
+  
+  
+  # BallByBallTable        <- dbGetQuery(conn, 'select * from "BallByBall"') %>% dplyr::select(-row.names)%>% distinct()
+  
+  pbp<-create_ball_by_ball(json_file = json_file,labels.df = c())
+  
+  
+  
+  #######################################################################################################################################################################
+  # Generating fielding stats
+  
+  fielding_stats_for_game <- pbp %>% dplyr::select(c(innings.overs.deliveries.wickets.kind, innings.overs.deliveries.wickets.fielders.name))
+  fielding_stats_for_game <- drop_na(fielding_stats_for_game)
+  fielding_stats_for_game_counts <- fielding_stats_for_game %>% dplyr::group_by(innings.overs.deliveries.wickets.fielders.name) %>% summarise(n=n())
+  fielding_stats_for_game$MatchID <- match_id 
+  
+  
+  #######################################################################################################################################################################
+  
+  # Setting Fixed Columns to Use for all games:
+  column_names_required_dataset<-c("innings.overs.over","innings.overs.deliveries.batter","innings.overs.deliveries.bowler","innings.overs.deliveries.non_striker",
+                                   "innings.overs.deliveries.runs.batter","innings.overs.deliveries.runs.extras","innings.overs.deliveries.runs.total",
+                                   "innings.overs.deliveries.extras.legbyes","innings.overs.deliveries.wickets.player_out","innings.overs.deliveries.wickets.fielders.name",
+                                   "innings.overs.deliveries.wickets.kind","innings.overs.deliveries.extras.wides","innings.overs.deliveries.extras.byes","innings.overs.deliveries.extras.noballs")
+  
+  column_names_required_dataset<-as.data.frame(column_names_required_dataset)
+  colnames(column_names_required_dataset)[1]<-"column_names"
+  pbp_columns<-as.data.frame(colnames(pbp))
+  colnames(pbp_columns)[1]<-"column_names"
+  
+  not_included_columns<-anti_join(column_names_required_dataset,pbp_columns)
+  
+  if(is_empty(not_included_columns$column_names)){
+    pbp<-pbp
+  }else{
+    
+    for (i in 1:length(not_included_columns$column_names)) {
+      pbp<-pbp %>% add_column(new_col=NA)
+      colnames(pbp)[colnames(pbp) == 'new_col'] <- not_included_columns$column_names[i]
+    }
+    
+    
+  }
+  pbp<-pbp %>% dplyr::select(innings.overs.over,innings.overs.deliveries.batter,innings.overs.deliveries.bowler,innings.overs.deliveries.non_striker,
+                             innings.overs.deliveries.runs.batter,innings.overs.deliveries.runs.extras,innings.overs.deliveries.runs.total,
+                             innings.overs.deliveries.extras.legbyes,innings.overs.deliveries.wickets.player_out,innings.overs.deliveries.wickets.fielders.name,
+                             innings.overs.deliveries.wickets.kind,innings.overs.deliveries.extras.wides,innings.overs.deliveries.extras.byes,innings.overs.deliveries.extras.noballs)
+  
+  
+  
+  
+  
+  # Creating Ball By Ball Table for Database:
+  #match_info<-CGameTable %>% dplyr::filter(MatchID==missing_matches$MatchID[k])
+  
+  league_name <- json_file$info$event$name
+  GameID<-missing_matchidsNEW[k,1]
+  LeagueID <- League %>% dplyr:: filter( league== league_name) %>% dplyr:: select(leagueid)
+  MatchID <- paste(game_id,league_id, sep = " ")
+  FormatID <- 3
+  
+  #TeamIDs
+  TeamName <- json_file$info$teams
+  Team1 <- strsplit(TeamName, "(?<=.{50})", perl = TRUE)[[1]]
+  Team2 <- strsplit(TeamName, "(?<=.{50})", perl = TRUE)[[2]]
+  
+  Team$team <- ifelse(Team$team == "Kings XI Punjab", "Punjab Kings", Team$team)
+  TeamID <- Team %>% dplyr:: filter(team == Team1 | team == Team2) 
+  HomeTeamID <- TeamID %>% dplyr:: filter(team == Team1) %>% dplyr:: select(teamid)
+  AwayTeamID <- TeamID %>% dplyr:: filter(team == Team2) %>% dplyr:: select(teamid)
+  HomeTeamID <- toString(HomeTeamID)
+  AwayTeamID <- toString(AwayTeamID)
+  
+  
+  #first second batting
+  tossteam <- json_file$info$toss$winner
+  OtherTeam <- TeamID %>% dplyr:: filter(team != tossteam)
+  OtherTeam <- OtherTeam %>% dplyr:: select(team)
+  OtherTeam <- toString(OtherTeam)
+  tossdecision <- json_file$info$toss$decision
+  FirstBatting <- if(tossdecision == "field"){OtherTeam} else {tossteam}
+  FirstBowling <- if(tossdecision == "bat"){OtherTeam} else(tossteam)
+  
+  FirstBattingTeamID <- TeamID %>% dplyr:: filter(team == FirstBatting) %>% dplyr:: select(teamid)
+  FirstBowlingTeamID <- TeamID %>% dplyr:: filter(team == FirstBowling) %>% dplyr:: select(teamid)
+  FirstBowlingTeamID <- toString(FirstBowlingTeamID)
+  FirstBattingTeamID <- toString(FirstBattingTeamID)
+  
+  StartDate <- json_file$meta$created
+  EndDate <- StartDate
+  
+  Venue <- json_file$info$venue
+  Venue <- data.frame(Venue)
+  Venue <- Venue %>% dplyr:: filter(row_number()== 1)
+  Venue <- toString(Venue)
+  VenueID <- venue %>% dplyr:: filter(venue == Venue) %>% dplyr:: select(venueid)
+  VenueID <- toString(VenueID)
+  
+  winner <- json_file$info$outcome$winner
+  Outcome <- json_file$info$outcome$by
+  WonBy <- "Won by"
+  Outcome <- toString(Outcome) 
+  runsorwicket <- if(winner == FirstBatting){"Runs"} else {"Wickets"}
+  Result <- paste(winner, WonBy, Outcome, runsorwicket)
+  
+  InningsVictory <- FALSE
+  RunsVictory <- if(runsorwicket == "Runs"){TRUE} else {FALSE}
+  
+  WicketsVictory <- if(runsorwicket == "Wickets"){TRUE} else {FALSE}
+  
+  InningsPlayed <- 2
+  
+  MOTM <- json_file$info$player_of_match
+  MOTM <- ifelse(is.null(MOTM), "NOT AVAILABLE", MOTM)
+  DuckworthLewis <- FALSE
+  
+  match_info <- data.frame(MatchID, GameID, LeagueID, FormatID, HomeTeamID, AwayTeamID, FirstBattingTeamID, FirstBowlingTeamID,StartDate, EndDate, VenueID, Result, InningsVictory, RunsVictory, WicketsVictory, InningsPlayed, MOTM, DuckworthLewis)
+  
+  
+  colnames(match_info)[3] <- "LeagueID"
+  # Innings 1 Data:
+  innings_1_data<-pbp[1:which(pbp$innings.overs.over==0)[2]-1,]
+  sequence_id<-seq(1,which(pbp$innings.overs.over==0)[2]-1 )
+  innings<-1
+  Innings_name<-"1st innings"
+  
+  # Adding Columns from CGame
+  innings_1_data<-data.frame(match_info$MatchID,match_info$GameID,match_info$LeagueID,sequence_id,innings,Innings_name,match_info$FirstBattingTeamID,match_info$FirstBowlingTeamID,innings_1_data)
+  colnames(innings_1_data)[1:8]<-c("MatchID","GameID","LeagueID","SequenceID","Innings","InningsName","BattingTeamID","BowlingTeamID")
+  
+  # Adding PlayerIDs in the BBB Table:
+  player<-player_ids_match_up
+  colnames(player)<-c("innings.overs.deliveries.batter","BatsmanID")
+  innings_1_data<-left_join(innings_1_data,player)
+  colnames(player)<-c("innings.overs.deliveries.bowler","BowlerID")
+  innings_1_data<-left_join(innings_1_data,player)
+  colnames(player)<-c("innings.overs.deliveries.non_striker","OtherBatsmanID")
+  innings_1_data<-left_join(innings_1_data,player)
+  
+  # Removing Additional Variables from Innings1data:
+  Innings1_data_complete<-innings_1_data %>% dplyr::select(-innings.overs.deliveries.batter,-innings.overs.deliveries.bowler,-innings.overs.deliveries.non_striker,-innings.overs.deliveries.wickets.fielders.name,-innings.overs.deliveries.runs.total)
+  
+  # Adding Additional Columns for BallByBall Table:
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(Wicket=ifelse(is.na(innings.overs.deliveries.wickets.player_out),0,1))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(BattingTeamCurrentWickets=cumsum(Wicket))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(ScoreValue=as.numeric(as.character(innings.overs.deliveries.runs.batter))+as.numeric(as.character(innings.overs.deliveries.runs.extras)))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(BattingTeamCurrentRuns=cumsum(ScoreValue))
+  
+  # Adding Column Names:
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.over'] <- "Over"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.runs.batter'] <- "Batsman_Score"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.runs.extras'] <- "Total_Extras"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.extras.legbyes'] <- "InningsLegByes"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.wickets.player_out'] <- "Player_Out"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.extras.wides'] <- "InningsWides"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.extras.byes'] <- "InningsByes"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.extras.noballs'] <- "InningsNoBalls"
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'innings.overs.deliveries.wickets.kind'] <- "DismissalType"
+  
+  
+  # Cumulative Sums Bowler
+  Innings1_data_complete<-data.frame(Innings1_data_complete,1)
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'X1'] <- "Balls"
+  
+  # Adding Balls=0 if wide or no ball bowled
+  Innings1_data_complete$InningsLegByes[is.na(Innings1_data_complete$InningsLegByes)]<-0
+  Innings1_data_complete$InningsByes[is.na(Innings1_data_complete$InningsByes)]<-0
+  Innings1_data_complete$InningsWides[is.na(Innings1_data_complete$InningsWides)]<-0
+  Innings1_data_complete$InningsNoBalls[is.na(Innings1_data_complete$InningsNoBalls)]<-0
+  Innings1_data_complete<-Innings1_data_complete %>% mutate(Balls=ifelse(InningsWides>0 | InningsNoBalls>0,0,Balls))
+  
+  
+  # Adding Bowler Specific Stats:
+  Innings1_data_complete$BowlerBalls <- ave(Innings1_data_complete$Balls, Innings1_data_complete$BowlerID, FUN=cumsum)
+  Innings1_data_complete$BowlerWickets <- ave(Innings1_data_complete$Wicket, Innings1_data_complete$BowlerID, FUN=cumsum)
+  Innings1_data_complete<-Innings1_data_complete %>% mutate(Bowler_runs=as.numeric(as.character(ScoreValue))-as.numeric(as.character(InningsLegByes))-as.numeric(as.character(InningsByes)))
+  Innings1_data_complete$BowlerConceded <- ave(Innings1_data_complete$Bowler_runs, Innings1_data_complete$BowlerID, FUN=cumsum)
+  
+  # Adding Batting Specific Stats:
+  Innings1_data_complete$BatsmanTotalRuns <- ave(Innings1_data_complete$Batsman_Score, Innings1_data_complete$BatsmanID, FUN=cumsum)
+  Innings1_data_complete$BatsmanFaced <- ave(Innings1_data_complete$Balls, Innings1_data_complete$BatsmanID, FUN=cumsum)
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsFour=ifelse(Batsman_Score==4,1,0))
+  Innings1_data_complete$BatsmanFours <- ave(Innings1_data_complete$InningsFour, Innings1_data_complete$BatsmanID, FUN=cumsum)
+  Innings1_data_complete$BatsmanRuns <-Innings1_data_complete$BattingTeamCurrentRuns
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsSixes=ifelse(Batsman_Score==6,1,0))
+  Innings1_data_complete$BatsmanSixes <- ave(Innings1_data_complete$InningsSixes, Innings1_data_complete$BatsmanID, FUN=cumsum)
+  
+  # Innings Stats:
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsBalls=cumsum(Balls))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsRunRate=round(BattingTeamCurrentRuns/(InningsBalls/6),digits = 2))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsRemainingBalls=120-InningsBalls)
+  Innings1_data_complete<-data.frame(Innings1_data_complete,1)
+  colnames(Innings1_data_complete)[colnames(Innings1_data_complete) == 'X1'] <- "InningsNumber"
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsWickets=cumsum(Wicket))
+  Innings1_data_complete$InningsRequiredRunRate<-NA
+  Innings1_data_complete$InningsBallLimit<-120
+  Innings1_data_complete$InningsTarget<-0
+  Innings1_data_complete$InningsSession<-0
+  Innings1_data_complete$InningsDay<-0
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(wicket_yes=ifelse(Wicket==1,"yes","no"))
+  Innings1_data_complete$InningsFallOfWickets <- ave(Innings1_data_complete$Wicket, Innings1_data_complete$wicket_yes, FUN=cumsum)
+  Innings1_data_complete$InningsRemainingRuns<-NA
+  Innings1_data_complete$InningsTotalRuns<-Innings1_data_complete$ScoreValue
+  Innings1_data_complete$InningsRuns<-Innings1_data_complete$BattingTeamCurrentRuns
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverComplete=ifelse(is.na(Over),FALSE,TRUE))
+  Innings1_data_complete$OverBalls<-6
+  Innings1_data_complete$Over<-as.numeric(as.character(Innings1_data_complete$Over))
+  Innings1_data_complete$Over<-nafill(Innings1_data_complete$Over, type = "locf")
+  Innings1_data_complete$OverBall <- ave(Innings1_data_complete$Balls, Innings1_data_complete$Over, FUN=cumsum)
+  Innings1_data_complete$OverLimit <- 0
+  
+  # Additional Columns:
+  Innings1_data_complete$BallByBallID<-NA
+  Innings1_data_complete$PlayTypeID<-NA
+  Innings1_data_complete$ShortText<-NA
+  Innings1_data_complete$InningsID<-NA
+  
+  # Over Data:
+  Innings1_data_complete$OverNumber<-Innings1_data_complete$Over
+  Innings1_data_complete$runs_each_over<-ave(Innings1_data_complete$ScoreValue, Innings1_data_complete$Over, FUN=cumsum)
+  runs_over<-Innings1_data_complete %>% group_by(OverNumber)%>% top_n(1,runs_each_over) %>% dplyr::select(OverNumber,runs_each_over)
+  colnames(runs_over)[2]<-"OverRuns"
+  Innings1_data_complete<-left_join(Innings1_data_complete,runs_over)
+  Innings1_data_complete<-Innings1_data_complete %>% distinct()
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverMaiden=ifelse(OverRuns==0,1,0))
+  Innings1_data_complete$InningsNoBalls<-as.numeric(as.character(Innings1_data_complete$InningsNoBalls))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverNoBall=ifelse(InningsNoBalls>0,1,0))
+  Innings1_data_complete$InningsWides<-as.numeric(as.character(Innings1_data_complete$InningsWides))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverWide=ifelse(InningsWides>0,1,0))
+  Innings1_data_complete$InningsByes<-as.numeric(as.character(Innings1_data_complete$InningsByes))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverByes=ifelse(InningsByes>0,1,0))
+  Innings1_data_complete$InningsLegByes<-as.numeric(as.character(Innings1_data_complete$InningsLegByes))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverLegByes=ifelse(InningsLegByes>0,1,0))
+  Innings1_data_complete$OverWickets<-ave(Innings1_data_complete$Wicket, Innings1_data_complete$Over, FUN=cumsum)
+  
+  # Dismissal Data:
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(DismissalBowled=ifelse(DismissalType=="bowled",TRUE,FALSE))
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(Dismissal=ifelse(Wicket==1,TRUE,FALSE))
+  Innings1_data_complete$DismissalBowlerID<-Innings1_data_complete$BowlerID
+  colnames(player)<-c("Player_Out","DismissalBatsmanID")
+  Innings1_data_complete<-left_join(Innings1_data_complete,player)
+  Innings1_data_complete$DismissalMinutes<-NA
+  Innings1_data_complete$DismissalRetiredText<-NA
+  Innings1_data_complete$DismissalIsKeeper<-NA
+  
+  # Adding Overs Data:
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(OverUnique=paste0(OverNumber,".",OverBall))
+  Innings1_data_complete$OverUnique<-as.numeric(as.character(Innings1_data_complete$OverUnique))
+  Innings1_data_complete$OverOvers<-Innings1_data_complete$OverUnique
+  Innings1_data_complete$OverActual<-Innings1_data_complete$OverUnique
+  Innings1_data_complete<-Innings1_data_complete %>% dplyr::mutate(InningsRemainingOvers=20.0-OverUnique)
+  Innings1_data_complete$BowlerOver<-NA
+  Innings1_data_complete$BowlerMaidens <- ave(Innings1_data_complete$OverMaiden, Innings1_data_complete$BowlerID, FUN=cumsum)
+  
+  # Getting on the BBB Table Data:
+  Innings1_data_complete<-subset(Innings1_data_complete, select=colnames(BallByBallTable))
+  
+  
+  ## Second Innings Data:
+  # Innings 1 Data:
+  innings_2_data<-pbp[which(pbp$innings.overs.over==0)[2]:nrow(pbp),]
+  sequence_id<-seq(1,nrow(pbp)-which(pbp$innings.overs.over==0)[2]+1)
+  innings<-2
+  Innings_name<-"2nd innings"
+  
+  # Adding Columns from CGame
+  innings_2_data<-data.frame(match_info$MatchID,match_info$GameID,match_info$LeagueID,sequence_id,innings,Innings_name,match_info$FirstBowlingTeamID,match_info$FirstBattingTeamID,innings_2_data)
+  colnames(innings_2_data)[1:8]<-c("MatchID","GameID","LeagueID","SequenceID","Innings","InningsName","BattingTeamID","BowlingTeamID")
+  
+  # Adding PlayerIDs in the BBB Table:
+  player<-player_ids_match_up
+  colnames(player)<-c("innings.overs.deliveries.batter","BatsmanID")
+  innings_2_data<-left_join(innings_2_data,player)
+  colnames(player)<-c("innings.overs.deliveries.bowler","BowlerID")
+  innings_2_data<-left_join(innings_2_data,player)
+  colnames(player)<-c("innings.overs.deliveries.non_striker","OtherBatsmanID")
+  innings_2_data<-left_join(innings_2_data,player)
+  
+  # Removing Additional Variables from Innings2data:
+  Innings2_data_complete<-innings_2_data %>% dplyr::select(-innings.overs.deliveries.batter,-innings.overs.deliveries.bowler,-innings.overs.deliveries.non_striker,-innings.overs.deliveries.wickets.fielders.name,-innings.overs.deliveries.runs.total)
+  
+  # Adding Additional Columns for BallByBall Table:
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(Wicket=ifelse(is.na(innings.overs.deliveries.wickets.player_out),0,1))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(BattingTeamCurrentWickets=cumsum(Wicket))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(ScoreValue=as.numeric(as.character(innings.overs.deliveries.runs.batter))+as.numeric(as.character(innings.overs.deliveries.runs.extras)))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(BattingTeamCurrentRuns=cumsum(ScoreValue))
+  
+  # Adding Column Names:
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.over'] <- "Over"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.runs.batter'] <- "Batsman_Score"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.runs.extras'] <- "Total_Extras"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.extras.legbyes'] <- "InningsLegByes"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.wickets.player_out'] <- "Player_Out"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.extras.wides'] <- "InningsWides"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.extras.byes'] <- "InningsByes"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.extras.noballs'] <- "InningsNoBalls"
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'innings.overs.deliveries.wickets.kind'] <- "DismissalType"
+  
+  
+  # Cumulative Sums Bowler
+  Innings2_data_complete<-data.frame(Innings2_data_complete,1)
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'X1'] <- "Balls"
+  
+  # Adding Balls=0 if wide or no ball bowled
+  Innings2_data_complete$InningsLegByes[is.na(Innings2_data_complete$InningsLegByes)]<-0
+  Innings2_data_complete$InningsByes[is.na(Innings2_data_complete$InningsByes)]<-0
+  Innings2_data_complete$InningsWides[is.na(Innings2_data_complete$InningsWides)]<-0
+  Innings2_data_complete$InningsNoBalls[is.na(Innings2_data_complete$InningsNoBalls)]<-0
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(Balls=ifelse(InningsWides>0 | InningsNoBalls>0,0,Balls))
+  
+  
+  # Adding Bowler Specific Stats:
+  Innings2_data_complete$BowlerBalls <- ave(Innings2_data_complete$Balls, Innings2_data_complete$BowlerID, FUN=cumsum)
+  Innings2_data_complete$BowlerWickets <- ave(Innings2_data_complete$Wicket, Innings2_data_complete$BowlerID, FUN=cumsum)
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(Bowler_runs=as.numeric(as.character(ScoreValue))-as.numeric(as.character(InningsLegByes))-as.numeric(as.character(InningsByes)))
+  Innings2_data_complete$BowlerConceded <- ave(Innings2_data_complete$Bowler_runs, Innings2_data_complete$BowlerID, FUN=cumsum)
+  
+  # Adding Batting Specific Stats:
+  Innings2_data_complete$BatsmanTotalRuns <- ave(Innings2_data_complete$Batsman_Score, Innings2_data_complete$BatsmanID, FUN=cumsum)
+  Innings2_data_complete$BatsmanFaced <- ave(Innings2_data_complete$Balls, Innings2_data_complete$BatsmanID, FUN=cumsum)
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsFour=ifelse(Batsman_Score==4,1,0))
+  Innings2_data_complete$BatsmanFours <- ave(Innings2_data_complete$InningsFour, Innings2_data_complete$BatsmanID, FUN=cumsum)
+  Innings2_data_complete$BatsmanRuns <-Innings2_data_complete$BattingTeamCurrentRuns
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsSixes=ifelse(Batsman_Score==6,1,0))
+  Innings2_data_complete$BatsmanSixes <- ave(Innings2_data_complete$InningsSixes, Innings2_data_complete$BatsmanID, FUN=cumsum)
+  
+  # Innings Stats:
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsBalls=cumsum(Balls))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsRunRate=round(BattingTeamCurrentRuns/(InningsBalls/6),digits = 2))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsRemainingBalls=120-InningsBalls)
+  Innings2_data_complete<-data.frame(Innings2_data_complete,1)
+  colnames(Innings2_data_complete)[colnames(Innings2_data_complete) == 'X1'] <- "InningsNumber"
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsWickets=cumsum(Wicket))
+  Innings2_data_complete$InningsBallLimit<-120
+  Innings2_data_complete$InningsTarget<-Innings1_data_complete$InningsRuns[nrow(Innings1_data_complete)]
+  Innings2_data_complete$InningsRuns<-Innings2_data_complete$BattingTeamCurrentRuns
+  Innings2_data_complete$InningsSession<-0
+  Innings2_data_complete$InningsDay<-0
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(wicket_yes=ifelse(Wicket==1,"yes","no"))
+  Innings2_data_complete$InningsFallOfWickets <- ave(Innings2_data_complete$Wicket, Innings2_data_complete$wicket_yes, FUN=cumsum)
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsRemainingRuns=InningsTarget-InningsRuns)
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsRequiredRunRate=round(InningsRemainingRuns/(InningsRemainingBalls/6)),digits=2)
+  
+  Innings2_data_complete$InningsTotalRuns<-Innings2_data_complete$ScoreValue
+  Innings2_data_complete$InningsRuns<-Innings2_data_complete$BattingTeamCurrentRuns
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverComplete=ifelse(is.na(Over),FALSE,TRUE))
+  Innings2_data_complete$OverBalls<-6
+  Innings2_data_complete$Over<-as.numeric(as.character(Innings2_data_complete$Over))
+  Innings2_data_complete$Over<-nafill(Innings2_data_complete$Over, type = "locf")
+  Innings2_data_complete$OverBall <- ave(Innings2_data_complete$Balls, Innings2_data_complete$Over, FUN=cumsum)
+  Innings2_data_complete$OverLimit <- 0
+  
+  # Additional Columns:
+  Innings2_data_complete$BallByBallID<-NA
+  Innings2_data_complete$PlayTypeID<-NA
+  Innings2_data_complete$ShortText<-NA
+  Innings2_data_complete$InningsID<-NA
+  
+  # Over Data:
+  Innings2_data_complete$OverNumber<-Innings2_data_complete$Over
+  Innings2_data_complete$runs_each_over<-ave(Innings2_data_complete$ScoreValue, Innings2_data_complete$Over, FUN=cumsum)
+  runs_over<-Innings2_data_complete %>% group_by(OverNumber)%>% top_n(1,runs_each_over) %>% dplyr::select(OverNumber,runs_each_over)
+  colnames(runs_over)[2]<-"OverRuns"
+  Innings2_data_complete<-left_join(Innings2_data_complete,runs_over)
+  Innings2_data_complete<-Innings2_data_complete %>% distinct()
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverMaiden=ifelse(OverRuns==0,1,0))
+  Innings2_data_complete$InningsNoBalls<-as.numeric(as.character(Innings2_data_complete$InningsNoBalls))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverNoBall=ifelse(InningsNoBalls>0,1,0))
+  Innings2_data_complete$InningsWides<-as.numeric(as.character(Innings2_data_complete$InningsWides))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverWide=ifelse(InningsWides>0,1,0))
+  Innings2_data_complete$InningsByes<-as.numeric(as.character(Innings2_data_complete$InningsByes))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverByes=ifelse(InningsByes>0,1,0))
+  Innings2_data_complete$InningsLegByes<-as.numeric(as.character(Innings2_data_complete$InningsLegByes))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverLegByes=ifelse(InningsLegByes>0,1,0))
+  Innings2_data_complete$OverWickets<-ave(Innings2_data_complete$Wicket, Innings2_data_complete$Over, FUN=cumsum)
+  
+  # Dismissal Data:
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(DismissalBowled=ifelse(DismissalType=="bowled",TRUE,FALSE))
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(Dismissal=ifelse(Wicket==1,TRUE,FALSE))
+  Innings2_data_complete$DismissalBowlerID<-Innings2_data_complete$BowlerID
+  colnames(player)<-c("Player_Out","DismissalBatsmanID")
+  Innings2_data_complete<-left_join(Innings2_data_complete,player)
+  Innings2_data_complete$DismissalMinutes<-NA
+  Innings2_data_complete$DismissalRetiredText<-NA
+  Innings2_data_complete$DismissalIsKeeper<-NA
+  
+  # Adding Overs Data:
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(OverUnique=paste0(OverNumber,".",OverBall))
+  Innings2_data_complete$OverUnique<-as.numeric(as.character(Innings2_data_complete$OverUnique))
+  Innings2_data_complete$OverOvers<-Innings2_data_complete$OverUnique
+  Innings2_data_complete$OverActual<-Innings2_data_complete$OverUnique
+  Innings2_data_complete<-Innings2_data_complete %>% dplyr::mutate(InningsRemainingOvers=20.0-OverUnique)
+  Innings2_data_complete$BowlerOver<-NA
+  Innings2_data_complete$BowlerMaidens <- ave(Innings2_data_complete$OverMaiden, Innings2_data_complete$BowlerID, FUN=cumsum)
+  
+  # Getting on the BBB Table Data:
+  Innings2_data_complete<-subset(Innings2_data_complete, select=colnames(BallByBallTable))
+  
+  x<-rbind(Innings1_data_complete,Innings2_data_complete)
+  Date <- match_info %>% dplyr:: select(GameID ,StartDate)
+  x <- left_join(x, Date)
+  complete_match_data<-rbind(complete_match_data,x)
+},error=function(e){
+  cat("ERROR :",conditionMessage(e), "\n")
+  
+  })
+}
+CGameTable <- CGameTable %>% dplyr::select(GameID, StartDate)
+BBB <- left_join(BallByBallTable, CGameTable)
+BBB <- BBB %>% dplyr:: filter(LeagueID == 8048)
+BBB <- BBB[!is.na(BBB$StartDate), ]  
+complete_match_data<-complete_match_data %>% distinct()
+complete_match_data <- complete_match_data %>% dplyr:: filter(StartDate > as.Date("2022-01-01"))
+complete_match_data <- rbind(complete_match_data, BBB)
+write.csv(complete_match_data, "Ipl2022_27_05_2022.csv")
+
+complete_match_dataTest <- complete_match_data %>% dplyr:: select(GameID)
+missing_matchidsNEWTEST <- missing_matchidsNEW
+colnames(missing_matchidsNEWTEST)[1]<- "GameID"
+complete_match_dataTest <- anti_join(missing_matchidsNEWTEST, complete_match_dataTest)
+complete_match_dataTest$GameID <- as.character(complete_match_dataTest$GameID)
+complete_match_dataTest <- complete_match_dataTest %>% dplyr:: filter(GameID > 1000000)
+complete_match_dataTestvitalityblast <- complete_match_dataTest %>% dplyr::filter(!grepl('12527', GameID))
+complete_match_dataTestTheHundred <- 
+
+
+# Creating Additional Tables for the Missing Tables:
+PlayerStatsTable  <- dbGetQuery(conn, 'select * from "PlayerStats"') %>% dplyr::select(-row.names)
+MatchIDs_PST<- na.omit(as.data.frame(dbGetQuery(conn, 'select "MatchID" from "PlayerStats"'))) %>% distinct()
+missing_matchids_PST<-anti_join(FilesInFolder, BBB)
+
+
+### Player Stats Table Creation ##:
+
+# Innings Position:
+Player_batsman_data<-complete_match_data %>% dplyr::select(MatchID,GameID,LeagueID,BattingTeamID,BatsmanID) %>% distinct()
+Player_batsman_data<-Player_batsman_data %>% group_by(MatchID,BattingTeamID) %>% dplyr::mutate(Innings1Position = row_number())
+
+# Total Runs and Balls Faced:
+runs_face<-complete_match_data %>% dplyr::select(MatchID,BattingTeamID,BatsmanID,ScoreValue)
+runs_face<-data.frame(runs_face,1)
+colnames(runs_face)[5]<-"Innings1BallsFaced"
+runs_face<-runs_face %>% group_by(MatchID,BattingTeamID,BatsmanID) %>% summarise_each(sum)
+Player_batsman_data<-left_join(Player_batsman_data,runs_face)
+Player_batsman_data<-Player_batsman_data %>% distinct()
+colnames(Player_batsman_data)[colnames(Player_batsman_data) == 'ScoreValue'] <- "Innings1Runs"
+
+# Innings1First Ball:
+first_ball<-complete_match_data %>% dplyr::select(MatchID,BattingTeamID,BatsmanID,SequenceID)
+first_ball<-first_ball %>% group_by(MatchID,BattingTeamID,BatsmanID) %>% top_n(-1,SequenceID)
+Player_batsman_data<-left_join(Player_batsman_data,first_ball)
+Player_batsman_data<-Player_batsman_data %>% distinct()
+colnames(Player_batsman_data)[colnames(Player_batsman_data) == 'SequenceID'] <- "Innings1FirstBall"
+
+# Innings Fours Sixes Etc:
+runs_count<-complete_match_data %>% dplyr::select(MatchID,BattingTeamID,BatsmanID,ScoreValue,InningsNoBalls,InningsByes,InningsLegByes,InningsWides)
+runs_count<-runs_count %>% dplyr::mutate(BatsmanRuns= ScoreValue-InningsNoBalls-InningsWides-InningsByes-InningsLegByes )
+runs_count<-runs_count %>% dplyr::select(MatchID,BattingTeamID,BatsmanID,ScoreValue)
+runs_count<-runs_count %>% group_by(MatchID,BattingTeamID,BatsmanID) %>% count(ScoreValue)
+runs_count<-spread(runs_count, ScoreValue, n)
+runs_count<-runs_count %>% dplyr::select(-`7`,-`8`)
+colnames(runs_count)[4:10]<-c("Innings1Runs0","Innings1Runs1","Innings1Runs2","Innings1Runs3","Innings1Fours","Innings1Runs5",
+                              "Innings1Sixes")
+Player_batsman_data<-left_join(Player_batsman_data,runs_count)
+Player_batsman_data<-Player_batsman_data %>% distinct()
+
+# Innings1Dismissed:
+dismissal_player<-complete_match_data %>% dplyr::select(MatchID,BattingTeamID,BatsmanID,InningsFallOfWickets) %>% group_by(MatchID,BattingTeamID,BatsmanID) %>% top_n(1,InningsFallOfWickets)
+dismissal_player<-dismissal_player %>% dplyr::mutate(InningsFallOfWickets=ifelse(InningsFallOfWickets>0,1,0))
+Player_batsman_data<-left_join(Player_batsman_data,dismissal_player)
+Player_batsman_data<-Player_batsman_data %>% distinct()
+colnames(Player_batsman_data)[colnames(Player_batsman_data) == 'InningsFallOfWickets'] <- "Innings1Dismissed"
+
+# Bowler Data:
+player_bowler_data<-complete_match_data %>% dplyr::select(MatchID,GameID,LeagueID,BowlingTeamID,BowlerID) %>% distinct()
+runs_bowled<-complete_match_data %>% dplyr::select(MatchID,BowlingTeamID,BowlerID,ScoreValue)
+runs_bowled<-data.frame(runs_bowled,1)
+colnames(runs_bowled)[5]<-"Innings1BallsBowledTotal"
+runs_bowled<-runs_bowled %>% group_by(MatchID,BowlingTeamID,BowlerID) %>% summarise_each(sum)
+player_bowler_data<-left_join(player_bowler_data,runs_bowled)
+player_bowler_data<-player_bowler_data %>% distinct()
+colnames(player_bowler_data)[colnames(player_bowler_data) == 'ScoreValue'] <- "Innings1RunsConceded"
+
+bowlsballedlegal<-complete_match_data %>% dplyr::select(MatchID,BowlingTeamID,BowlerID,BowlerBalls) %>% distinct()
+bowlsballedlegal<-bowlsballedlegal %>% group_by(MatchID,BowlingTeamID,BowlerID) %>% top_n(1,BowlerBalls)
+colnames(bowlsballedlegal)[4]<-"Innings1BallsBowledLegal"
+player_bowler_data<-left_join(player_bowler_data,bowlsballedlegal)
+player_bowler_data<-player_bowler_data %>% distinct()
+
+ballsmaiden<-complete_match_data %>% dplyr::select(MatchID,BowlingTeamID,BowlerID,BowlerMaidens) %>% distinct()
+ballsmaiden<-ballsmaiden %>% group_by(MatchID,BowlingTeamID,BowlerID) %>% top_n(1,BowlerMaidens)
+colnames(ballsmaiden)[4]<-"Innings1Maidens"
+player_bowler_data<-left_join(player_bowler_data,ballsmaiden)
+player_bowler_data<-player_bowler_data %>% distinct()
+
+ballswicket<-complete_match_data %>% dplyr::select(MatchID,BowlingTeamID,BowlerID,BowlerWickets) %>% distinct()
+ballswicket<-ballswicket %>% group_by(MatchID,BowlingTeamID,BowlerID) %>% top_n(1,BowlerWickets)
+colnames(ballswicket)[4]<-"Innings1Wickets"
+player_bowler_data<-left_join(player_bowler_data,ballswicket)
+player_bowler_data<-player_bowler_data %>% distinct()
+
+# Innings Runs Conceded:
+runs_conceded<-complete_match_data %>% dplyr::select(MatchID,BowlingTeamID,BowlerID,ScoreValue,InningsByes,InningsLegByes)
+runs_conceded<-runs_conceded %>% dplyr::mutate(BowlerRuns= ScoreValue-InningsByes-InningsLegByes )
+runs_conceded<-runs_conceded %>% dplyr::select(MatchID,BowlingTeamID,BowlerID,ScoreValue)
+runs_conceded<-runs_conceded %>% group_by(MatchID,BowlingTeamID,BowlerID) %>% count(ScoreValue)
+runs_conceded<-spread(runs_conceded, ScoreValue, n)
+runs_conceded<-runs_conceded %>% dplyr::select(-`7`,-`8`)
+colnames(runs_conceded)[4:10]<-c("Innings1RunsConceded0","Innings1RunsConceded1","Innings1RunsConceded2","Innings1RunsConceded3","Innings1RunsConceded4","Innings1RunsConceded5",
+                              "Innings1RunsConceded6")
+player_bowler_data<-left_join(player_bowler_data,runs_conceded)
+player_bowler_data<-player_bowler_data %>% distinct()
+
+# Creating Total PlayStats Dataset:
+complete_player_data<-complete_match_data %>% dplyr::select(MatchID,GameID,LeagueID,BattingTeamID,BowlingTeamID,BatsmanID,BowlerID) %>% distinct()
+bastman_id<-complete_player_data %>% dplyr::select(MatchID,GameID,LeagueID,BattingTeamID,BatsmanID) %>% distinct()
+colnames(bastman_id)[4:5]<-c("TeamID","PlayerID")
+bowler_id<-complete_player_data %>% dplyr::select(MatchID,GameID,LeagueID,BowlingTeamID,BowlerID) %>% distinct()
+colnames(bowler_id)[4:5]<-c("TeamID","PlayerID")
+complete_player_data<-rbind(bastman_id,bowler_id) %>% distinct()
+
+# Changing Batsman and Bowler Data Variables:
+colnames(Player_batsman_data)[colnames(Player_batsman_data) == 'BattingTeamID']<-"TeamID"
+colnames(Player_batsman_data)[colnames(Player_batsman_data) == 'BatsmanID']<-"PlayerID"
+colnames(player_bowler_data)[colnames(player_bowler_data) == 'BowlingTeamID']<-"TeamID"
+colnames(player_bowler_data)[colnames(player_bowler_data) == 'BowlerID']<-"PlayerID"
+
+player_dataset<-left_join(complete_player_data,Player_batsman_data)
+player_dataset<-left_join(player_dataset,player_bowler_data)
+playerstatscolumnnames<-colnames(PlayerStatsTable)
+player_dataset<-fncols(player_dataset,playerstatscolumnnames)
+player_dataset<-subset(player_dataset, select=colnames(PlayerStatsTable))
+
+m <- write.csv(complete_match_data, "Ipl2022_10_5_2022.csv")
+
+# Append the information to the database
+dbWriteTable(conn = conn, name = "PlayerStats", value=player_dataset, append=TRUE)
+dbWriteTable(conn = conn, name = "BallByBall", value=complete_match_data, append=TRUE)
+mssingmatches <- write.csv(complete_match_dataTest, "missing games.csv")
+
+CGameTable        <- dbGetQuery(conn, 'select * from "Game"') %>% dplyr::select(-row.names)
+BallByBallTable        <- dbGetQuery(conn, 'select * from "BallByBall"') %>% dplyr::select(-row.names)%>% distinct()
+
+games_table<-semi_join(CGameTable,BallByBallTable)
+
+
+
+
+
+
