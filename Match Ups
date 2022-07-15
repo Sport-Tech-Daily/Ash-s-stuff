@@ -1,0 +1,1934 @@
+setwd("C:/Users/aashu/Downloads/Cricsheet Data")
+
+# Packages/Library
+library(readr)
+library(dplyr)
+library(plyr)
+library(class)
+library("DMwR")
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(ISLR)
+library(knitr)
+library(tree)
+library(rpart)
+library("rpart.plot")
+library("randomForest")
+library(gbm)
+library("leaps")
+library(e1071)
+library("ROCR")
+library("missForest")
+library(mice)
+library("VIM")
+library("pROC")
+library("tree")
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+library(stringr)
+library(lubridate)
+library(RODBC)
+library(stringdist)
+library(RPostgreSQL)
+library("xlsx")
+library("readxl")
+library(markovchain)
+library(reticulate)
+library(forecastML)
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+#getting the data:
+TeamStats  <- dbGetQuery(conn, 'select * from "TeamStats"')
+Game1<-dbGetQuery(conn, 'select * from "Game"')
+Game<-dbGetQuery(conn, 'select * from "Game"')
+venue <-dbGetQuery(conn, 'select * from cricketdb.venue')
+Team <- dbGetQuery(conn, 'select * from cricketdb.team')
+Team <- Team %>% distinct()
+BBB <-  dbGetQuery(conn, 'select * from "cricsheetBBB"')
+BBB <- BBB %>% dplyr:: select(-X)
+BBB <- BBB %>% dplyr:: distinct()
+PlayerStatsTable <- dbGetQuery(conn, 'select * from "PlayerStats"')
+PlayerNames <- dbGetQuery(conn, 'select * from cricketdb.player')
+PlayerNames <- PlayerNames %>% dplyr:: select(player, playerid)
+colnames(PlayerNames)[2]<- "BatsmanID"
+PlayerNames$BatsmanID <- as.integer(PlayerNames$BatsmanID)
+#dates
+
+# Game <- Game %>% select(MatchID, GameID, StartDate)
+BBB<- BBB %>% dplyr:: filter(LeagueID == 8044 | LeagueID == 8048 | LeagueID == 8623 | LeagueID == 8053 | LeagueID == 8679 | LeagueID == 8653 | BattingTeamID == 2 | BattingTeamID == 25 | BattingTeamID == 1 | BattingTeamID == 5 | BattingTeamID == 6 | BattingTeamID == 3 | BattingTeamID == 7 | BattingTeamID == 4 | BattingTeamID == 40)
+# BBB <- left_join(BBB, Game)
+BBB$StartDate<-parse_date_time(BBB$StartDate, orders = c("mdy", "dmy", "ymd"))
+BBB <- BBB %>% dplyr:: filter(StartDate > as.Date("2018-01-01"))
+
+Team1 <- c("Pritvi Shaw" , "David Warner", "Mitchell Marsh", "Rishabh Pant", "Sarfaraz Khan" , "Rovman Powell", "Axar Patel", "Shardul Thakur", "Kuldeep Yadav",  "Anrich Nortje",  "Khaleel Ahmed")
+Team2 <- c("Ishan Kishan", "Rohit Sharma", "Kieron Pollard", "Tilak Varma" , "Daniel Sams", "Tim David", "Moeen Ali", "Sam Curran", "David Willey", "Jasprit Bumrah", "Rahul Chahar") 
+
+Team1 <- data.frame(Team1)
+#Team2 <- data.frame(Team2)
+########################################################################################################################################################################################################################################
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[1,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats <- BowlerBalls
+BowlerStats <- BowlerStats %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats <- subset(BowlerStats , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats)[1]<- "Bowler"
+BowlerStats <- BowlerStats %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats <- BowlerStats %>% distinct()
+
+# average and low ball filtering
+#BowlerStats <- BowlerStats %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats <-  BowlerStats %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats <- BowlerStats %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats <- left_join(BowlerStats, dotballs)
+BowlerStats <- BowlerStats %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats <- BowlerStats %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats <- left_join(BowlerStats, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats <- left_join(BowlerStats, BatsmanSixes)
+BowlerStats$Player <- Team1[1,]
+
+#################################################################################################################################################################################################################################
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[2,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats2 <- BowlerBalls
+BowlerStats2 <- BowlerStats2 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats2 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats2 <- subset(BowlerStats2 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats2)[1]<- "Bowler"
+BowlerStats2 <- BowlerStats2 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats2 <- BowlerStats2 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats2 <- BowlerStats2 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats2 <-  BowlerStats2 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats2 <- BowlerStats2 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats2 <- left_join(BowlerStats2, dotballs)
+BowlerStats2 <- BowlerStats2 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats2 <- BowlerStats2 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats2 <- left_join(BowlerStats2, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats2 <- left_join(BowlerStats2, BatsmanSixes)
+BowlerStats2$Player <- Team1[2,]
+completematchupdata <- rbind(BowlerStats, BowlerStats2)
+
+
+#############################################################################################################################################################################################################################################
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[3,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats3 <- BowlerBalls
+BowlerStats3 <- BowlerStats3 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats3 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats3 <- subset(BowlerStats3 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats3)[1]<- "Bowler"
+BowlerStats3 <- BowlerStats3 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats3 <- BowlerStats3 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats3 <- BowlerStats3 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats3 <-  BowlerStats3 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats3 <- BowlerStats3 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats3 <- left_join(BowlerStats3, dotballs)
+BowlerStats3 <- BowlerStats3 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats3 <- BowlerStats3 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats3 <- left_join(BowlerStats3, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats3 <- left_join(BowlerStats3, BatsmanSixes)
+BowlerStats3$Player <- Team1[3,]
+completematchupdata <- rbind(completematchupdata, BowlerStats3)
+
+##################################################################################################################################################################################################################################################
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[4,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats4 <- BowlerBalls
+BowlerStats4 <- BowlerStats4 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats4 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats4 <- subset(BowlerStats4 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats4)[1]<- "Bowler"
+BowlerStats4 <- BowlerStats4 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats4 <- BowlerStats4 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats4 <- BowlerStats4 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats4 <-  BowlerStats4 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats4 <- BowlerStats4 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats4 <- left_join(BowlerStats4, dotballs)
+BowlerStats4 <- BowlerStats4 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats4 <- BowlerStats4 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats4 <- left_join(BowlerStats4, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats4 <- left_join(BowlerStats4, BatsmanSixes)
+BowlerStats4$Player <- Team1[4,]
+completematchupdata <- rbind(completematchupdata, BowlerStats4)
+
+#################################################################################################################################################################
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[5,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats5 <- BowlerBalls
+BowlerStats5 <- BowlerStats5 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats5 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats5 <- subset(BowlerStats5 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats5)[1]<- "Bowler"
+BowlerStats5 <- BowlerStats5 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats5 <- BowlerStats5 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats5 <- BowlerStats5 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats5 <-  BowlerStats5 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats5 <- BowlerStats5 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats5 <- left_join(BowlerStats5, dotballs)
+BowlerStats5 <- BowlerStats5 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats5 <- BowlerStats5 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats5 <- left_join(BowlerStats5, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats5 <- left_join(BowlerStats5, BatsmanSixes)
+BowlerStats5$Player <- Team1[5,]
+completematchupdata <- rbind(completematchupdata, BowlerStats5)
+
+#######################################################################################################################################################################################################################################
+
+
+
+
+
+
+
+
+##################################################################################################################################################################################
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[6,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats6 <- BowlerBalls
+BowlerStats6 <- BowlerStats6 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats6 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats6 <- subset(BowlerStats6 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats6)[1]<- "Bowler"
+BowlerStats6 <- BowlerStats6 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats6 <- BowlerStats6 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats6 <- BowlerStats6 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats6 <-  BowlerStats6 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats6 <- BowlerStats6 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats6 <- left_join(BowlerStats6, dotballs)
+BowlerStats6 <- BowlerStats6 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats6 <- BowlerStats6 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats6 <- left_join(BowlerStats6, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats6 <- left_join(BowlerStats6, BatsmanSixes)
+BowlerStats6$Player <- Team1[6,]
+completematchupdata <- rbind(completematchupdata, BowlerStats6)
+
+###########################################################################################################################################################################################################
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[7,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats7 <- BowlerBalls
+BowlerStats7 <- BowlerStats7 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats7 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats7 <- subset(BowlerStats7 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats7)[1]<- "Bowler"
+BowlerStats7 <- BowlerStats7 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats7 <- BowlerStats7 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats7 <- BowlerStats7 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats7 <-  BowlerStats7 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats7 <- BowlerStats7 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats7 <- left_join(BowlerStats7, dotballs)
+BowlerStats7 <- BowlerStats7 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats7 <- BowlerStats7 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats7 <- left_join(BowlerStats7, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats7 <- left_join(BowlerStats7, BatsmanSixes)
+BowlerStats7$Player <- Team1[7,]
+completematchupdata <- rbind(completematchupdata, BowlerStats7)
+
+
+
+
+###################################################################################################################################################################################################################
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[8,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats8 <- BowlerBalls
+BowlerStats8 <- BowlerStats8 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats8 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats8 <- subset(BowlerStats8 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats8)[1]<- "Bowler"
+BowlerStats8 <- BowlerStats8 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats8 <- BowlerStats8 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats8 <- BowlerStats8 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats8 <-  BowlerStats8 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats8 <- BowlerStats8 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats8 <- left_join(BowlerStats8, dotballs)
+BowlerStats8 <- BowlerStats8 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats8 <- BowlerStats8 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats8 <- left_join(BowlerStats8, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats8 <- left_join(BowlerStats8, BatsmanSixes)
+BowlerStats8$Player <- Team1[8,]
+completematchupdata <- rbind(completematchupdata, BowlerStats8)
+
+##############################################################################################################################################################################################################
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[9,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats9 <- BowlerBalls
+BowlerStats9 <- BowlerStats9 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats9 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats9 <- subset(BowlerStats9 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats9)[1]<- "Bowler"
+BowlerStats9 <- BowlerStats9 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats9 <- BowlerStats9 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats9 <- BowlerStats9 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats9 <-  BowlerStats9 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats9 <- BowlerStats9 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats9 <- left_join(BowlerStats9, dotballs)
+BowlerStats9 <- BowlerStats9 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats9 <- BowlerStats9 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats9 <- left_join(BowlerStats9, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats9 <- left_join(BowlerStats9, BatsmanSixes)
+BowlerStats9$Player <- Team1[9,]
+completematchupdata <- rbind(completematchupdata, BowlerStats9)
+
+################################################################################################################################################################################################################
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[10,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats10 <- BowlerBalls
+BowlerStats10 <- BowlerStats10 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats10 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats10 <- subset(BowlerStats10 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats10)[1]<- "Bowler"
+BowlerStats10 <- BowlerStats10 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats10 <- BowlerStats10 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats10 <- BowlerStats10 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats10 <-  BowlerStats10 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats10 <- BowlerStats10 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats10 <- left_join(BowlerStats10, dotballs)
+BowlerStats10 <- BowlerStats10 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats10 <- BowlerStats10 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats10 <- left_join(BowlerStats10, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats10 <- left_join(BowlerStats10, BatsmanSixes)
+BowlerStats10$Player <- Team1[10,]
+completematchupdata <- rbind(completematchupdata, BowlerStats10)
+
+
+
+################################################################################################################################################################################################################################
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team1[11,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(Bowler %in% Team2)
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats11 <- BowlerBalls
+BowlerStats11 <- BowlerStats11 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats11 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats11 <- subset(BowlerStats11 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats11)[1]<- "Bowler"
+BowlerStats11 <- BowlerStats11 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats11 <- BowlerStats11 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats11 <- BowlerStats11 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats11 <-  BowlerStats11 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats11 <- BowlerStats11 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats11 <- left_join(BowlerStats11, dotballs)
+BowlerStats11 <- BowlerStats11 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats11 <- BowlerStats11 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats11 <- left_join(BowlerStats11, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats11 <- left_join(BowlerStats11, BatsmanSixes)
+BowlerStats11$Player <- Team1[11,]
+completematchupdata <- rbind(completematchupdata, BowlerStats11)
+
+###########################################################################################################################################################################################################################################
+
+#team2
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[1,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats12 <- BowlerBalls
+BowlerStats12 <- BowlerStats12 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats12 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats12 <- subset(BowlerStats12 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats12)[1]<- "Bowler"
+BowlerStats12 <- BowlerStats12 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats12 <- BowlerStats12 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats12 <- BowlerStats12 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats12 <-  BowlerStats12 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats12 <- BowlerStats12 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats12 <- left_join(BowlerStats12, dotballs)
+BowlerStats12 <- BowlerStats12 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats12 <- BowlerStats12 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats12 <- left_join(BowlerStats12, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats12 <- left_join(BowlerStats12, BatsmanSixes)
+BowlerStats12$Player <- Team2[1,]
+completematchupdata <- rbind(completematchupdata, BowlerStats12)
+
+
+
+###############################################################################################################################################################################################################################
+
+#team2
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[2,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats13 <- BowlerBalls
+BowlerStats13 <- BowlerStats13 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats13 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats13 <- subset(BowlerStats13 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats13)[1]<- "Bowler"
+BowlerStats13 <- BowlerStats13 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats13 <- BowlerStats13 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats13 <- BowlerStats13 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats13 <-  BowlerStats13 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats13 <- BowlerStats13 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats13 <- left_join(BowlerStats13, dotballs)
+BowlerStats13 <- BowlerStats13 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats13 <- BowlerStats13 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats13 <- left_join(BowlerStats13, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats13 <- left_join(BowlerStats13, BatsmanSixes)
+BowlerStats13$Player <- Team2[2,]
+completematchupdata <- rbind(completematchupdata, BowlerStats13)
+
+###########################################################################################################################################################################################################################################
+#team2
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[3,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats14 <- BowlerBalls
+BowlerStats14 <- BowlerStats14 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats14 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats14 <- subset(BowlerStats14 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats14)[1]<- "Bowler"
+BowlerStats14 <- BowlerStats14 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats14 <- BowlerStats14 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats14 <- BowlerStats14 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats14 <-  BowlerStats14 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats14 <- BowlerStats14 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats14 <- left_join(BowlerStats14, dotballs)
+BowlerStats14 <- BowlerStats14 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats14 <- BowlerStats14 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats14 <- left_join(BowlerStats14, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats14 <- left_join(BowlerStats14, BatsmanSixes)
+BowlerStats14$Player <- Team2[3,]
+completematchupdata <- rbind(completematchupdata, BowlerStats14)
+
+######################################################################################################################################################################################################################
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[4,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats15 <- BowlerBalls
+BowlerStats15 <- BowlerStats15 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats15 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats15 <- subset(BowlerStats15 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats15)[1]<- "Bowler"
+BowlerStats15 <- BowlerStats15 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats15 <- BowlerStats15 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats15 <- BowlerStats15 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats15 <-  BowlerStats15 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats15 <- BowlerStats15 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats15 <- left_join(BowlerStats15, dotballs)
+BowlerStats15 <- BowlerStats15 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats15 <- BowlerStats15 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats15 <- left_join(BowlerStats15, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats15 <- left_join(BowlerStats15, BatsmanSixes)
+BowlerStats15$Player <- Team2[4,]
+completematchupdata <- rbind(completematchupdata, BowlerStats15)
+
+
+
+################################################################################################################################################################################################################
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[5,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats16 <- BowlerBalls
+BowlerStats16 <- BowlerStats16 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats16 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats16 <- subset(BowlerStats16 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats16)[1]<- "Bowler"
+BowlerStats16 <- BowlerStats16 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats16 <- BowlerStats16 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats16 <- BowlerStats16 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats16 <-  BowlerStats16 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats16 <- BowlerStats16 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats16 <- left_join(BowlerStats16, dotballs)
+BowlerStats16 <- BowlerStats16 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats16 <- BowlerStats16 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats16 <- left_join(BowlerStats16, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats16 <- left_join(BowlerStats16, BatsmanSixes)
+BowlerStats16$Player <- Team2[5,]
+completematchupdata <- rbind(completematchupdata, BowlerStats16)
+
+
+###################################################################################################################################################################################################################
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[6,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats17 <- BowlerBalls
+BowlerStats17 <- BowlerStats17 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats17 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats17 <- subset(BowlerStats17 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats17)[1]<- "Bowler"
+BowlerStats17 <- BowlerStats17 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats17 <- BowlerStats17 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats17 <- BowlerStats17 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats17 <-  BowlerStats17 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats17 <- BowlerStats17 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats17 <- left_join(BowlerStats17, dotballs)
+BowlerStats17 <- BowlerStats17 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats17 <- BowlerStats17 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats17 <- left_join(BowlerStats17, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats17 <- left_join(BowlerStats17, BatsmanSixes)
+BowlerStats17$Player <- Team2[6,]
+completematchupdata <- rbind(completematchupdata, BowlerStats17)
+
+##########################################################################################################################################################
+
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[7,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats18 <- BowlerBalls
+BowlerStats18 <- BowlerStats18 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats18 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats18 <- subset(BowlerStats18 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats18)[1]<- "Bowler"
+BowlerStats18 <- BowlerStats18 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats18 <- BowlerStats18 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats18 <- BowlerStats18 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats18 <-  BowlerStats18 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats18 <- BowlerStats18 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats18 <- left_join(BowlerStats18, dotballs)
+BowlerStats18 <- BowlerStats18 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats18 <- BowlerStats18 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats18 <- left_join(BowlerStats18, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats18 <- left_join(BowlerStats18, BatsmanSixes)
+BowlerStats18$Player <- Team2[7,]
+completematchupdata <- rbind(completematchupdata, BowlerStats18)
+
+
+
+
+###################################################################################################################################################################################################################################
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[8,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats19 <- BowlerBalls
+BowlerStats19 <- BowlerStats19 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats19 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats19 <- subset(BowlerStats19 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats19)[1]<- "Bowler"
+BowlerStats19 <- BowlerStats19 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats19 <- BowlerStats19 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats19 <- BowlerStats19 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats19 <-  BowlerStats19 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats19 <- BowlerStats19 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats19 <- left_join(BowlerStats19, dotballs)
+BowlerStats19 <- BowlerStats19 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats19 <- BowlerStats19 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats19 <- left_join(BowlerStats19, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats19 <- left_join(BowlerStats19, BatsmanSixes)
+BowlerStats19$Player <- Team2[8,]
+completematchupdata <- rbind(completematchupdata, BowlerStats19)
+
+
+
+
+
+#################################################################################################################################################################################
+
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[9,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats20 <- BowlerBalls
+BowlerStats20 <- BowlerStats20 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats20 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats20 <- subset(BowlerStats20 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats20)[1]<- "Bowler"
+BowlerStats20 <- BowlerStats20 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats20 <- BowlerStats20 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats20 <- BowlerStats20 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats20 <-  BowlerStats20 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats20 <- BowlerStats20 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats20 <- left_join(BowlerStats20, dotballs)
+BowlerStats20 <- BowlerStats20 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats20 <- BowlerStats20 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats20 <- left_join(BowlerStats20, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats20 <- left_join(BowlerStats20, BatsmanSixes)
+BowlerStats20$Player <- Team2[9,]
+completematchupdata <- rbind(completematchupdata, BowlerStats20)
+
+
+
+###############################################################################################################################################################################################
+
+
+
+
+
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[10,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats21 <- BowlerBalls
+BowlerStats21 <- BowlerStats21 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats21 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats21 <- subset(BowlerStats21 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats21)[1]<- "Bowler"
+BowlerStats21 <- BowlerStats21 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats21 <- BowlerStats21 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats21 <- BowlerStats21 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats21 <-  BowlerStats21 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats21 <- BowlerStats21 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats21 <- left_join(BowlerStats21, dotballs)
+BowlerStats21 <- BowlerStats21 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats21 <- BowlerStats21 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats21 <- left_join(BowlerStats21, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats21 <- left_join(BowlerStats21, BatsmanSixes)
+BowlerStats21$Player <- Team2[10,]
+completematchupdata <- rbind(completematchupdata, BowlerStats21)
+
+
+###############################################################################################################################################################################################
+
+
+
+
+
+
+colnames(PlayerNames)[2]<- "BowlerID"
+colnames(PlayerNames)[1]<- "Bowler"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+PlayerNames <- PlayerNames %>% distinct()
+
+MatchUpBBB <- left_join(BBB, PlayerNames)
+
+Team2 <- data.frame(Team2)
+
+PlayerID <- PlayerNames %>% filter(Bowler == Team2[11,])
+PlayerID <- PlayerID$BowlerID
+
+
+MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(BatsmanID %in% PlayerID)
+colnames(Team1)[1]<- "Bowler"
+MatchUpBBB <- left_join(Team1, MatchUpBBB)
+MatchUpBBB <- MatchUpBBB[!is.na(MatchUpBBB$row.names), ]
+
+
+
+#BatsmanStats
+
+
+# lastplayed <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: filter(StartDate == max(StartDate))
+# lastplayed <-lastplayed %>% dplyr:: select(Bowler, StartDate)
+# colnames(lastplayed)[2] <- "LastPlayed"
+# MatchUpBBB <- left_join(MatchUpBBB, lastplayed)
+# MatchUpBBB <- MatchUpBBB %>% distinct()
+# MatchUpBBB <- MatchUpBBB %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+BowlerBalls <- MatchUpBBB %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(Bowler)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Bowlers
+
+BowlerStats22 <- BowlerBalls
+BowlerStats22 <- BowlerStats22 %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- MatchUpBBB %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats22 <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats22 <- subset(BowlerStats22 , select = c("Bowler", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats22)[1]<- "Bowler"
+BowlerStats22 <- BowlerStats22 %>% dplyr::: group_by(Bowler) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats22 <- BowlerStats22 %>% distinct()
+
+# average and low ball filtering
+#BowlerStats22 <- BowlerStats22 %>% dplyr:: filter(BowlerBallsBowled > 24)
+BowlerStats22 <-  BowlerStats22 %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+BowlerStats22 <- BowlerStats22 %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+dotballs <- MatchUpBBB %>% dplyr:: filter(ScoreValue == 0)
+dotballs <- dotballs %>% distinct()
+dotballs <- dotballs %>% dplyr:: group_by(MatchID, Bowler) %>% dplyr:: count(Bowler)
+dotballs <- dotballs %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(dotballs = sum(n))
+BowlerStats22 <- left_join(BowlerStats22, dotballs)
+BowlerStats22 <- BowlerStats22 %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+BowlerStats22 <- BowlerStats22 %>% dplyr:: mutate(StrikeRate = (BowlerRunsConceded/BowlerBallsBowled) * 100)
+
+#4s 6s
+
+BatsmanFours <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+BowlerStats22 <- left_join(BowlerStats22, BatsmanFours)
+
+BatsmanSixes <- MatchUpBBB %>% dplyr:: group_by(Bowler) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+BowlerStats22$Player <- Team2[11,]
+completematchupdata <- rbind(completematchupdata, BowlerStats22)
+
+
+
+x <- write.csv(completematchupdata, "MatchUpData.csv")
+
+
+
