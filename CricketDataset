@@ -1,0 +1,543 @@
+setwd("C:/Users/aashu/Downloads/Cricsheet Data")
+
+# Packages/Library
+library(readr)
+library(dplyr)
+library(plyr)
+library(class)
+library("DMwR")
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(ISLR)
+library(knitr)
+library(tree)
+library(rpart)
+library("rpart.plot")
+library("randomForest")
+library(gbm)
+library("leaps")
+library(e1071)
+library("ROCR")
+library("missForest")
+library(mice)
+library("VIM")
+library("pROC")
+library("tree")
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+library(stringr)
+library(lubridate)
+library(RODBC)
+library(stringdist)
+library(RPostgreSQL)
+library("xlsx")
+library("readxl")
+library(markovchain)
+library(reticulate)
+library(forecastML)
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+#getting the data:
+TeamStats  <- dbGetQuery(conn, 'select * from "TeamStats"')
+Game1<-dbGetQuery(conn, 'select * from "Game"')
+Game<-dbGetQuery(conn, 'select * from "Game"')
+venue <-dbGetQuery(conn, 'select * from cricketdb.venue')
+Team <- dbGetQuery(conn, 'select * from cricketdb.team')
+Team <- Team %>% distinct()
+BBB <-  dbGetQuery(conn, 'select * from "cricsheetBBB"')
+BBB <- BBB %>% dplyr:: select(-X)
+BBB <- BBB %>% dplyr:: distinct()
+PlayerStatsTable <- dbGetQuery(conn, 'select * from "PlayerStats"')
+PlayerNames <- dbGetQuery(conn, 'select * from cricketdb.player')
+PlayerNames <- PlayerNames %>% dplyr:: select(player, playerid)
+colnames(PlayerNames)[2]<- "BatsmanID"
+PlayerNames$BatsmanID <- as.integer(PlayerNames$BatsmanID)
+#dates
+
+# Game <- Game %>% select(MatchID, GameID, StartDate)
+BBB<- BBB %>% dplyr:: filter(LeagueID == 8044 | LeagueID == 8048 | LeagueID == 8623 | LeagueID == 8053 | LeagueID == 8679 | LeagueID == 8653 | BattingTeamID == 2 | BattingTeamID == 25 | BattingTeamID == 1 | BattingTeamID == 5 | BattingTeamID == 6 | BattingTeamID == 3 | BattingTeamID == 7 | BattingTeamID == 4 | BattingTeamID == 40)
+# BBB <- left_join(BBB, Game)
+BBB$StartDate<-parse_date_time(BBB$StartDate, orders = c("mdy", "dmy", "ymd"))
+BBB <- BBB %>% dplyr:: filter(StartDate > as.Date("2016-01-01"))
+
+
+
+#BatsmanStats
+
+# Total Runs
+PlayerStats <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanTotalRuns = last(BatsmanTotalRuns))
+colnames(PlayerStats)[1]<- "MatchID"
+colnames(PlayerStats)[2]<- "BatsmanID"
+colnames(PlayerStats)[3]<- "BatsmanRunsScoredInInnings"
+
+# Balls faced per innings
+#BallsFaced <- aggregate(BBB$BatsmanFaced, by=list(BBB$MatchID, BBB$BatsmanID), FUN=last)
+BallsFaced <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise (BallsFaced = last(BatsmanFaced)- first(BatsmanFaced))
+PlayerStats <- left_join(PlayerStats, BallsFaced)
+
+#boundaries scored
+BatsmanFours <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+PlayerStats <- left_join(PlayerStats, BatsmanFours)
+
+#Sixes scored
+BatsmanSixes <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+PlayerStats <- left_join(PlayerStats, BatsmanSixes)
+
+
+#dotballs faced
+BBB <- BBB %>% distinct()
+Dotballs <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: filter(ScoreValue == 0)
+Dotballs <- Dotballs %>% distinct()
+Dotballs <- Dotballs %>% dplyr:: group_by(MatchID) %>%  dplyr:: count(BatsmanID)
+colnames(Dotballs)[3] <- "Dotballs"
+PlayerStats <- left_join(PlayerStats, Dotballs)
+PlayerStats <- PlayerStats %>% distinct()
+
+
+
+#PlayerNames
+
+PlayerStats <- left_join(PlayerStats, PlayerNames)
+PlayerStats <- PlayerStats %>% distinct()
+
+#leagues
+
+BBBLeagueID <- BBB %>% dplyr:: select(MatchID, LeagueID)
+PlayerStats <- left_join(PlayerStats, BBBLeagueID)
+PlayerStats <- PlayerStats %>% distinct()
+
+#date
+BBBdates <- BBB %>% dplyr:: select(MatchID, StartDate)
+PlayerStats <- left_join(PlayerStats, BBBdates)
+PlayerStats <- PlayerStats %>% distinct()
+
+dates <- as.POSIXct(PlayerStats$StartDate, format = "%m/%d/%Y %H:%M:%S")
+dates <- format(dates, format="%Y")
+PlayerStats$dates <- dates
+
+
+#roles
+PlayerStats <- PlayerStats %>% distinct()
+
+
+#First 5 Balls 
+
+First5Ball <- BBB %>% dplyr:: filter(BatsmanFaced <= 5)
+First5Balls <- First5Ball %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanFirst5BallRuns = last(BatsmanTotalRuns), First5BallsFaced = last(BatsmanFaced))
+First5Balls$BatsmanFirst5BallRuns <- as.double(First5Balls$BatsmanFirst5BallRuns)
+First5Balls$First5BallsFaced <- as.double(First5Balls$First5BallsFaced)
+First5Balls <- First5Balls %>% dplyr:: mutate(First5BallStrikeRate = (BatsmanFirst5BallRuns/First5BallsFaced)*100)
+
+PlayerStats <- left_join(PlayerStats, First5Balls)
+
+#powerPlay
+BallsInPowerPlay <- BBB %>% dplyr:: filter(InningsBalls <= 36 )
+RunsInPowerPlay <- BallsInPowerPlay %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanPowerPlayRuns = last(BatsmanTotalRuns), PowerPlayBallsFaced = last(BatsmanFaced))
+
+#PlayerStats <- left_join(PlayerStats, BestPowerPlay)
+PowerPlayDates <- PlayerStats %>% dplyr:: select(BatsmanID,player, dates)
+RunsInPowerPlay <- left_join(RunsInPowerPlay, PowerPlayDates)
+RunsInPowerPlay <- RunsInPowerPlay %>% distinct()
+RunsInPowerPlay$BatsmanID <- as.integer(RunsInPowerPlay$BatsmanID)
+
+Noofinningsinpowerplay <- RunsInPowerPlay %>% dplyr:: group_by(dates) %>% dplyr:: count(player)
+colnames(Noofinningsinpowerplay)[3] <- "Noofinningsinpowerplayseason"
+
+RunsInPowerPlay$BatsmanPowerPlayRuns <- as.double(RunsInPowerPlay$BatsmanPowerPlayRuns)
+RunsInPowerPlay$PowerPlayBallsFaced <- as.double(RunsInPowerPlay$PowerPlayBallsFaced)
+
+
+
+
+
+PlayerStats <- left_join(PlayerStats, RunsInPowerPlay)
+PlayerStats <- left_join(PlayerStats,Noofinningsinpowerplay)
+PlayerStats <- PlayerStats[!is.na(PlayerStats$BatsmanID), ]
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(PowerPlayStrikeRate = (BatsmanPowerPlayRuns/PowerPlayBallsFaced) * 100)
+#PlayerStats <- left_join(PlayerStats, BallsFacedInPowerPlay)
+
+#middleovers 
+MiddleOvers <- BBB %>% dplyr:: filter(between(InningsBalls, 37,  89)) 
+MiddleOvers$BatsmanTotalRuns <- as.double(MiddleOvers$BatsmanTotalRuns)
+RunsInMiddleOvers <- MiddleOvers %>%  dplyr:: group_by(MatchID,BatsmanID) %>% dplyr:: summarise(BatsmanMiddleOverRuns =last(BatsmanTotalRuns) - first(BatsmanTotalRuns), MiddleOversBallsFaced = last(BatsmanFaced) - first(BatsmanFaced))
+Middleoverdates <- PlayerStats %>% dplyr:: select( BatsmanID, player, dates)
+RunsInMiddleOvers <- left_join(RunsInMiddleOvers, Middleoverdates)
+RunsInMiddleOvers <- RunsInMiddleOvers %>% distinct()
+RunsInMiddleOvers$BatsmanMiddleOverRuns <- as.double(RunsInMiddleOvers$BatsmanMiddleOverRuns)
+RunsInMiddleOvers$MiddleOversBallsFaced <- as.double(RunsInMiddleOvers$MiddleOversBallsFaced)
+Noofinningsinmiddleovers <- RunsInMiddleOvers %>% dplyr:: group_by(dates) %>% dplyr:: count(player)
+colnames(Noofinningsinmiddleovers)[3] <- "Noofinningsinmiddleoverseason"
+PlayerStats <- left_join(PlayerStats, RunsInMiddleOvers)
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(MiddleOversStrikeRate = ((BatsmanMiddleOverRuns/MiddleOversBallsFaced) * 100))
+
+PlayerStats <- left_join(PlayerStats, Noofinningsinmiddleovers)
+
+#deathOvers
+DeathOvers <- BBB %>% dplyr:: filter(InningsBalls >= 90)
+DeathOvers$BatsmanTotalRuns <- as.double(DeathOvers$BatsmanTotalRuns)
+RunsInDeathOvers <- DeathOvers %>%  dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanDeathOverRuns = last(BatsmanTotalRuns) - first(BatsmanTotalRuns), DeathOversBallsFaced = (last(BatsmanFaced)- first(BatsmanFaced))-1)
+Deathoverdates <- PlayerStats %>% dplyr:: select( BatsmanID, player, dates)
+RunsInDeathOvers <- left_join(RunsInDeathOvers, Deathoverdates)
+RunsInDeathOvers <- RunsInDeathOvers %>% distinct()
+Noofinningsindeathovers <- RunsInDeathOvers %>% dplyr:: group_by(dates) %>% dplyr:: count(player)
+colnames(Noofinningsindeathovers)[3] <- "Noofinningsindeathoverseason"
+RunsInDeathOvers$BatsmanDeathOverRuns <- as.double(RunsInDeathOvers$BatsmanDeathOverRuns)
+RunsInDeathOvers$DeathOversBallsFaced <- as.double(RunsInDeathOvers$DeathOversBallsFaced)
+PlayerStats <- left_join(PlayerStats, RunsInDeathOvers)
+
+
+
+PlayerStats <- left_join(PlayerStats, Noofinningsindeathovers)
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(DeathOversSR = ((BatsmanDeathOverRuns/DeathOversBallsFaced) * 100))
+
+PlayerStats <- PlayerStats %>% distinct()
+#StrikeRate
+PlayerStats$BatsmanRunsScoredInInnings <- as.double(PlayerStats$BatsmanRunsScoredInInnings)
+PlayerStats <- PlayerStats %>% dplyr:: mutate(StrikeRate = (BatsmanRunsScoredInInnings/BallsFaced)*100)
+
+#boundary percentage
+Boundaries <- PlayerStats %>% dplyr:: group_by(BatsmanID) %>% dplyr:: summarise(BatsmanTotalRuns = sum(BatsmanRunsScoredInInnings), fours = sum(BatsmanFours), sixes = sum(BatsmanSixes))
+Boundaries <- Boundaries %>% dplyr:: mutate( runsinfours = fours*4)
+Boundaries <- Boundaries %>% dplyr:: mutate(runsinsixes = sixes*6)
+Boundaries <- Boundaries %>% dplyr:: mutate(runsinbondaries = runsinfours+runsinsixes)
+Boundaries <- Boundaries %>% dplyr:: mutate(BoundaryPercentage = (runsinbondaries/BatsmanTotalRuns)*100) 
+Boundaries <- left_join(Boundaries, PlayerNames)
+
+#PlayerStats<- left_join(PlayerStats, Game)
+#PlayerStats <- PlayerStats %>% dplyr:: filter(StartDate > as.Date('2016-01-01'))
+PlayerStats <- left_join(PlayerStats,Boundaries)
+#Teams
+# colnames(Team)[2]<- "TeamID" 
+# Team$TeamID <- as.double(Team$TeamID)
+# TeamNames <- left_join(PlayerStatsTable, Team)
+# TeamsWithPlayerID <- TeamNames %>% dplyr::select(MatchID ,PlayerID, TeamID, team)
+# colnames(TeamsWithPlayerID)[2] <- "BatsmanID"
+# TeamsWithPlayerID$BatsmanID <- as.double(TeamsWithPlayerID$BatsmanID)
+# PlayerStats <- left_join(PlayerStats, TeamsWithPlayerID)
+# PlayerStats <- PlayerStats %>% distinct()
+
+#
+#number_of_innings <- data.frame(count(PlayerStats$player))
+
+number_of_innings <- PlayerStats %>% dplyr:: select(player, dates)
+number_of_innings <- number_of_innings %>% dplyr::group_by(dates) %>% dplyr:: count(player)
+number_of_innings_in_year <- number_of_innings %>% dplyr:: group_by(player ,dates) %>% dplyr::summarise(Noofinningsinseason = sum(n))
+number_of_innings_in_career <- number_of_innings %>% dplyr:: group_by(player) %>% dplyr::summarise(Noofinningsinseason = sum(n))
+PlayerStats <- left_join(PlayerStats, number_of_innings_in_year)
+PlayerStats <- left_join(PlayerStats, number_of_innings_in_career)
+
+
+#Ad hoc exponential smoothing
+
+
+
+
+
+
+#
+indexpowerplay <- is.na(PlayerStats$PowerPlayBallsFaced)
+PlayerStats$PowerPlayBallsFaced[indexpowerplay]<- 0
+#
+indexBF <- is.na(PlayerStats$BallsFaced)
+PlayerStats$BallsFaced[indexBF]<- 0
+
+indexDeath <- is.na(PlayerStats$DeathOversBallsFaced)
+PlayerStats$DeathOversBallsFaced[indexDeath] <- 0
+
+indexmiddle <- is.na(PlayerStats$MiddleOversBallsFaced)
+PlayerStats$MiddleOversBallsFaced[indexmiddle]<-0
+#
+indexpowerplayruns <- is.na(PlayerStats$BatsmanPowerPlayRuns)
+PlayerStats$BatsmanPowerPlayRuns[indexpowerplay]<- 0
+
+indexRunsScored <- is.na(PlayerStats$BatsmanRunsScoredInInnings)
+PlayerStats$BatsmanRunsScoredInInnings[indexRunsScored]<- 0
+
+indexDeathruns <- is.na(PlayerStats$BatsmanDeathOverRuns)
+PlayerStats$BatsmanDeathOverRuns[indexDeathruns] <- 0
+#
+indexmiddleruns <- is.na(PlayerStats$BatsmanMiddleOverRuns)
+PlayerStats$BatsmanMiddleOverRuns[indexmiddleruns]<-0
+
+PlayerStats$BallsFaced <- ifelse(PlayerStats$BallsFaced < 0, 0, PlayerStats$BallsFaced)
+PlayerStats$StrikeRate <- ifelse(PlayerStats$StrikeRate < 0, 0, PlayerStats$StrikeRate)
+PlayerStats$BoundaryPercentage <- ifelse(PlayerStats$BoundaryPercentage < 0 | PlayerStats$BoundaryPercentage > 100, 0, PlayerStats$BoundaryPercentage)
+
+
+TotalsBF <- PlayerStats %>% dplyr:: group_by(player) %>% dplyr:: summarise(TotalBF = sum(BallsFaced), PowerPlayBF = sum(PowerPlayBallsFaced), MiddleBF = sum(MiddleOversBallsFaced), DeathBF= sum(DeathOversBallsFaced), TotalRuns = sum(BatsmanRunsScoredInInnings),
+                                                                           PowerplayRuns = sum(BatsmanPowerPlayRuns), MiddleRuns = sum(BatsmanMiddleOverRuns), DeathRuns = sum(BatsmanDeathOverRuns))
+
+TotalsBF$TotalBF <- as.double(TotalsBF$TotalBF)
+TotalsBF$PowerPlayBF <- as.double(TotalsBF$PowerPlayBF)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(PowerplayProportion = PowerPlayBF/TotalBF)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(MiddleProportion = MiddleBF/TotalBF)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(DeathProportion = DeathBF/TotalBF)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(PowerPlayRunsProportion = PowerplayRuns/TotalRuns)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(MiddleRunsProportion = MiddleRuns/TotalRuns)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(DeathRunsProportion = DeathRuns/TotalRuns)
+
+colnames(Team)[2] <- "BattingTeamID"
+TeamIDS <- BBB %>% dplyr:: select(MatchID, BatsmanID, BattingTeamID)
+TeamIDS$BattingTeamID <- as.character(TeamIDS$BattingTeamID)
+
+TeamIDS <- left_join(TeamIDS, Team)
+TeamIDs <- TeamIDS %>% dplyr:: select(MatchID, BatsmanID, BattingTeamID)
+TeamIDs <- TeamIDS %>% dplyr:: select(-teamdisplayname)
+PlayerStats <- left_join(PlayerStats, TeamIDS)
+PlayerStats <- PlayerStats %>% distinct()
+
+
+
+BatsmanPosition1 <- PlayerStats %>% dplyr:: select(MatchID, BattingTeamID, BatsmanID)
+BatsmanPosition <- BatsmanPosition1 %>% dplyr:: group_by(MatchID, BattingTeamID) %>% dplyr:: summarise(BatsmanPosition = cumsum(!duplicated(BatsmanID)))
+
+Entered <- BBB %>% group_by(MatchID, BattingTeamID, BatsmanID) %>%
+  dplyr:: summarise(BallsEntered = min(InningsBalls))
+PlayerStats <- left_join(PlayerStats, Entered)
+AverageBallsEntered <- PlayerStats %>% dplyr:: group_by(BatsmanID) %>% dplyr:: summarise(AvgBallsEntered = mean(BallsEntered))
+PlayerNames <- PlayerNames %>% distinct()
+TotalsBF <- left_join(TotalsBF, PlayerNames)
+TotalsBF <- left_join(TotalsBF, AverageBallsEntered)
+TotalsBF <- TotalsBF %>% distinct()
+
+TotalsBF <- TotalsBF %>% na.omit(TotalsBF$AvgBallsEntered)
+TotalsBF$MaxPhase<-pmax(TotalsBF$PowerplayProportion, TotalsBF$MiddleProportion, TotalsBF$DeathProportion)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(MostBallsFaced = case_when(
+  MaxPhase == PowerplayProportion ~ "Powerplay",
+  MaxPhase == MiddleProportion ~ "Middle Overs",
+  MaxPhase == DeathProportion ~ "Death Overs"))
+
+TotalsBF$Maxrunsscored<-pmax(TotalsBF$PowerplayRuns, TotalsBF$MiddleRuns, TotalsBF$DeathRuns)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(MostRunsScored = case_when(
+  Maxrunsscored == PowerplayRuns ~ "Powerplay",
+  Maxrunsscored == MiddleRuns ~ "Middle Overs",
+  Maxrunsscored == DeathRuns ~ "Death Overs"))
+
+TotalsBF <- TotalsBF %>% dplyr:: select(-BatsmanID)
+TotalsBF <- TotalsBF %>% distinct()
+
+TotalsBF$PowerplayProportion <- ifelse(TotalsBF$PowerplayProportion < 0, 0, TotalsBF$PowerplayProportion)
+TotalsBF$MiddleProportion <- ifelse(TotalsBF$MiddleProportion < 0, 0, TotalsBF$MiddleProportion)
+TotalsBF$DeathProportion <- ifelse(TotalsBF$DeathProportion < 0, 0, TotalsBF$DeathProportion)
+
+TotalsBF$PowerPlayRunsProportion <- ifelse(TotalsBF$PowerPlayRunsProportion < 0, 0, TotalsBF$PowerPlayRunsProportion)
+TotalsBF$MiddleRunsProportion <- ifelse(TotalsBF$MiddleRunsProportion< 0, 0, TotalsBF$MiddleRunsProportion)
+TotalsBF$DeathRunsProportion<- ifelse(TotalsBF$DeathRunsProportion < 0, 0, TotalsBF$DeathRunsProportion)
+
+TotalsBF$Type <- paste0(TotalsBF$MostBallsFaced, TotalsBF$MostRunsScored, sep = "  ")
+
+
+
+PhaseByPhase <- write.csv(TotalsBF,"PhaseByPhase.csv")
+# 
+
+#dotballsinarow
+BBBdates <- BBB %>% dplyr:: select(MatchID, StartDate)
+PlayerStats <- left_join(PlayerStats, BBBdates)
+PlayerStats <- PlayerStats %>% distinct()
+PlayerStats <- PlayerStats %>% dplyr:: mutate(DotBallsPercentage = (Dotballs/BallsFaced)*100)
+PlayerStats$DotBallsPercentage <- ifelse(PlayerStats$DotBallsPercentage < 0, 0, PlayerStats$DotBallsPercentage)
+PlayerStats$DotBallsPercentage <- ifelse(PlayerStats$DotBallsPercentage > 100, 0, PlayerStats$DotBallsPercentage)
+PlayerStats$MiddleOversBallsFaced <- ifelse(PlayerStats$MiddleOversBallsFaced < 0, 0, PlayerStats$MiddleOversBallsFaced)
+PlayerStats$DeathOversBallsFaced <- ifelse(PlayerStats$DeathOversBallsFaced < 0, 0, PlayerStats$DeathOversBallsFaced)
+PlayerStats$PowerPlayBallsFaced <- ifelse(PlayerStats$PowerPlayBallsFaced < 0, 0, PlayerStats$PowerPlayBallsFaced)
+
+PlayerStats$Dotballs <- as.numeric(PlayerStats$Dotballs)
+PlayerStats$MiddleOversStrikeRate <- as.numeric(PlayerStats$MiddleOversStrikeRate)
+PlayerStats$PowerPlayStrikeRate <- as.numeric(PlayerStats$PowerPlayStrikeRate)
+PlayerStats$DotBallsPercentage <- as.numeric(PlayerStats$DotBallsPercentage)
+PlayerStats$StrikeRate <- as.numeric(PlayerStats$StrikeRate)
+PlayerStats$Noofinningsinpowerplayseason <- as.numeric(PlayerStats$Noofinningsinpowerplayseason)
+PlayerStats$Noofinningsinmiddleoverseason <- as.numeric(PlayerStats$Noofinningsinmiddleoverseason)
+PlayerStats$Noofinningsindeathoverseason <- as.numeric(PlayerStats$Noofinningsindeathoverseason)
+PlayerStats$DeathOversSR <- as.numeric(PlayerStats$DeathOversSR)
+
+PlayerStats$PowerPlayBallsFaced <- ifelse(PlayerStats$PowerPlayBallsFaced < 0, 0, PlayerStats$PowerPlayBallsFaced)
+
+library(writexl)
+write_excel(PlayerStats, "IPLBatsmanReadyForTableau1.xlsx")
+
+
+################################################################################################################################################################################################
+
+#Bowler Balls Bowled Per Game
+BowlerBalls <- BBB %>% dplyr:: group_by(MatchID, BowlerID) %>% dplyr:: summarise(BowlerBallsBowled = last(BowlerBalls))
+BowlerBalls$BowlerBallsBowled[is.na(BowlerBalls$BowlerBallsBowled)] <- 0
+
+#Players
+colnames(PlayerNames)[1]<- "Player"
+colnames(PlayerNames)[2]<- "BowlerID"
+PlayerNames$BowlerID <- as.double(PlayerNames$BowlerID)
+BowlerStats <- left_join(BowlerBalls, PlayerNames)
+BowlerStats <- BowlerStats %>% distinct()
+
+
+#Bowler Wickets Taken Per Game
+BowlerWickets <- BBB %>% dplyr:: group_by(MatchID, BowlerID) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = last(BowlerConceded))
+BowlerStats <- left_join(BowlerStats, BowlerWickets)          
+
+#overs bowled
+BowlerStats <- BowlerStats %>% dplyr:: mutate(BowlerOversBowled = BowlerBallsBowled/6)
+
+#economy rate 
+BowlerStats <- BowlerStats %>% dplyr:: mutate(EconomyRate = BowlerRunsConceded/BowlerOversBowled)
+
+#Avg
+BowlerStats <-  BowlerStats %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+BowlerStats <- BowlerStats %>% dplyr::mutate(BowlingAverage = ifelse(BowlingAvg == "Inf", BowlerRunsConceded, BowlingAvg))
+BowlerStats <- BowlerStats %>% select(-BowlingAvg)
+
+#bowler dot balls  
+BBB <- BBB %>% distinct()
+Bowler
+BBB %>% dplyr:: group_by(MatchID, BowlerID) %>% dplyr:: filter(ScoreValue == 0)
+BowlerDotballs <- BowlerDotballs %>% dplyr:: count(BowlerID, MatchID)
+colnames(BowlerDotballs)[3] <- "DotballsBowled"
+BowlerStats <- left_join(BowlerStats, BowlerDotballs)
+BowlerStats <- BowlerStats %>% distinct()
+
+#dot ball %
+BowlerStats <- BowlerStats %>% dplyr::mutate(DotBallPercentage = (DotballsBowled/BowlerBallsBowled)*100)
+BowlerStats <- BowlerStats[!is.na(BowlerStats$BowlerID), ]   
+BallsBowledInSeason <- BowlerStats %>% dplyr:: group_by(Player) %>% dplyr:: summarise(TotalBallsInSeason = sum(BowlerBallsBowled))
+DotballsBowledInSeason <- BowlerStats %>% dplyr:: group_by(Player) %>% dplyr:: summarise(DotBallsInSeason = sum(DotballsBowled))
+q7 <- left_join(BallsBowledInSeason, DotballsBowledInSeason)
+q7 <- q7 %>% dplyr:: mutate(DotBallPercentage = (DotBallsInSeason/TotalBallsInSeason)*100)
+HighestDotball <- write.csv(q7, "HighestDotballPercentage.csv")
+
+
+
+BowlerStats <- left_join(BowlerStats, BBBdates)
+BowlerStats <- BowlerStats %>% distinct()
+
+colnames(Team)[2] <- "BowlingTeamID"
+TeamIDS <- BBB %>% dplyr:: select(MatchID, BowlerID, BowlingTeamID)
+TeamIDS$BowlingTeamID <- as.character(TeamIDS$BowlingTeamID)
+
+TeamIDS <- left_join(TeamIDS, Team)
+TeamIDs <- TeamIDS %>% dplyr:: select(MatchID, BowlerID, BowlingTeamID)
+BowlerStats <- left_join(BowlerStats, TeamIDS)
+BowlerStats <- BowlerStats %>% distinct()
+BowlerStats <- BowlerStats %>% dplyr:: select(-team, )
+
+dates <- as.POSIXct(BowlerStats$StartDate, format = "%m/%d/%Y %H:%M:%S")
+dates <- format(dates, format="%Y")
+BowlerStats$dates <- dates
+
+
+number_of_bowler_innings <-  BowlerStats %>% dplyr:: select(Player, dates)
+number_of_bowler_innings <- number_of_bowler_innings %>% dplyr::group_by(Player ,dates) %>% dplyr:: count(Player)
+colnames(number_of_bowler_innings)[3]<-'Noofinningsinseason'
+BowlerStats <- left_join(BowlerStats,number_of_bowler_innings)
+BowlerStats <- BowlerStats %>% distinct()
+
+
+       
+
+write.csv(BowlerStats, "IPLBowlersReadyForTableau.csv")
+
+
+
+######################################################################################################################################################################################
+#TeamStats
+colnames(Team)[2] <- "BattingTeamID"
+TeamIDS <- BBB %>% dplyr:: select(MatchID, BatsmanID, BattingTeamID)
+TeamIDS$BattingTeamID <- as.character(TeamIDS$BattingTeamID)
+
+TeamIDS <- left_join(TeamIDS, Team)
+TeamIDs <- TeamIDS %>% dplyr:: select(MatchID, BatsmanID, BattingTeamID)
+PlayerStats <- left_join(PlayerStats, TeamIDS)
+PlayerStats <- PlayerStats %>% distinct()
+
+
+TeamTotalRuns <- BBB %>% dplyr:: group_by(MatchID, BattingTeamID) %>% dplyr:: summarise(TotalRuns = last(InningsRuns))
+PlayerStats <- left_join(PlayerStats, TeamTotalRuns)
+PlayerStats <- PlayerStats %>% dplyr:: select(-teamdisplayname)
+PlayerStats$team <- ifelse(PlayerStats$team == "Lucknow Supergiants", "Lucknow Super Giants", PlayerStats$team)
+PlayerStats <- PlayerStats %>% distinct()
+
+write.csv(PlayerStats, "PlayerStats.csv")
+
+write.csv(BBB, "Ipl2022_BBB.csv")
+a1 <- subset(TeamTotalRuns,select = c(BattingTeamID,TotalRuns))  
+a1 <- aggregate(a1$TotalRuns,list(a1$BattingTeamID), FUN = sum)
+colnames(a1)<- c('TeamId','TotalLeagueRuns')
+
+a2 <- subset(PlayerStats,select = c(BatsmanID,BatsmanRunsScoredInInnings,BattingTeamID,player))
+a2 <- a2 %>% dplyr:: group_by(BatsmanID,BattingTeamID,player) %>% dplyr:: summarise(BatsmanRunsScoredInInnings = sum(BatsmanRunsScoredInInnings))
+a2 <- distinct(a2)
+colnames(a2)[2]<- 'TeamId'
+
+q2 <- left_join(a2,a1)
+q2 <- distinct(q2)
+
+q2 <- q2 %>% dplyr::mutate(contribution = (BatsmanRunsScoredInInnings/TotalLeagueRuns)*100)
+write.csv(q2,'Contribution.csv')
+
+# Teams With Highest 1s 2s %
+
+H <- BBB %>% dplyr:: group_by(MatchID, BowlerID) %>% dplyr:: summarise(BowlerBallsBowled = last(BowlerBalls))
+
+
+
+
+
+
+
+# TeamGame <- TeamStats %>% inner_join(Game1, by= "GameID")
+# TeamGame <- TeamGame %>% dplyr::select(-contains("Innings2"))
+# TeamGame <- TeamGame %>% dplyr::filter(TeamGame$LeagueID.x == 8044 | TeamGame$LeagueID.x == 8048 | TeamGame$LeagueID.x == 8623 | TeamGame$LeagueID.x == 8053 | TeamGame$LeagueID.x == 8679 | TeamGame$LeagueID.x == 8653 )
+# TeamGame <- TeamGame %>% dplyr::select(-LeagueID.y)
+# colnames(TeamGame)[colnames(TeamGame) == "LeagueID.x"] <- "LeagueID"
+# colnames(Team)[colnames(Team) == "teamid"] <- "TeamID"
+# colnames(Team)[colnames(Team) == "team"] <- "Team"
+# Team$TeamID <- as.double(Team$TeamID)
+# Team <- Team %>% dplyr:: select(Team, TeamID)
+# TeamGame <- left_join(TeamGame, Team)
+
+#OPP team
+colnames(Team)[colnames(Team) == "teamid"] <- "TeamID"
+colnames(Team)[colnames(Team) == "team"] <- "Team"
+TeamOpp <- Team %>% dplyr:: select(OppID, Opposition)
+TeamGame<- left_join(TeamGame, TeamOpp)
+
+#venue data
+
+
+colnames(venue)[colnames(venue)== "venueid"]<- "VenueID"
+venue$VenueID <- as.double(venue$VenueID)
+venue <- venue %>% dplyr:: select(venue, VenueID)
+TeamGame <- left_join(TeamGame, venue)
+TeamGame <- TeamGame %>% distinct()
+
+number_of_innings <- data.frame(count(PlayerStats$player))
+colnames(number_of_innings)[1] <-"player" 
+colnames(number_of_innings)[2] <-"NoofInnings" 
+PlayerStats <- left_join(PlayerStats, number_of_innings)
+
+number_of_bowlinginnings <- data.frame(count(BowlerStats$player))
+colnames(number_of_bowlinginnings)[1] <-"player" 
+colnames(number_of_bowlinginnings)[2] <-"NoofInnings" 
+BowlerStats <- left_join(BowlerStats, number_of_bowlinginnings)
+Team 
+
+write.csv(TeamGame, "TeamStats.csv")
+
+
+
+
+
+
+
+
+
