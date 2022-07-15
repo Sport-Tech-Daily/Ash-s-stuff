@@ -1,0 +1,1108 @@
+setwd("C:/Users/aashu/Downloads/Cricsheet Data")
+
+# Packages/Library
+library(readr)
+library(dplyr)
+library(plyr)
+library(class)
+library("DMwR")
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(ISLR)
+library(knitr)
+library(tree)
+library(rpart)
+library("rpart.plot")
+library("randomForest")
+library(gbm)
+library("leaps")
+library(e1071)
+library("ROCR")
+library("missForest")
+library(mice)
+library("VIM")
+library("pROC")
+library("tree")
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+library(stringr)
+library(lubridate)
+library(RODBC)
+library(stringdist)
+library(RPostgreSQL)
+library("xlsx")
+library("readxl")
+library(markovchain)
+library(reticulate)
+library(forecastML)
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+#getting the data:
+TeamStats  <- dbGetQuery(conn, 'select * from "TeamStats"')
+Game1<-dbGetQuery(conn, 'select * from "Game"')
+Game<-dbGetQuery(conn, 'select * from "Game"')
+venue <-dbGetQuery(conn, 'select * from cricketdb.venue')
+Team <- dbGetQuery(conn, 'select * from cricketdb.team')
+Team <- Team %>% distinct()
+BBB <-  dbGetQuery(conn, 'select * from "cricsheetBBB"')
+BBB <- BBB %>% dplyr:: select(-X)
+BBB <- BBB %>% dplyr:: distinct()
+PlayerStatsTable <- dbGetQuery(conn, 'select * from "PlayerStats"')
+PlayerNames <- dbGetQuery(conn, 'select * from cricketdb.player')
+PlayerNames <- PlayerNames %>% dplyr:: select(player, playerid)
+colnames(PlayerNames)[2]<- "BatsmanID"
+PlayerNames$BatsmanID <- as.integer(PlayerNames$BatsmanID)
+#dates
+
+# Game <- Game %>% select(MatchID, GameID, StartDate)
+BBB<- BBB %>% dplyr:: filter(LeagueID == 8044 | LeagueID == 8048 | LeagueID == 8623 | LeagueID == 8053 | LeagueID == 8679 | LeagueID == 8653 | BattingTeamID == 2 | BattingTeamID == 25 | BattingTeamID == 1 | BattingTeamID == 5 | BattingTeamID == 6 | BattingTeamID == 3 | BattingTeamID == 7 | BattingTeamID == 4 | BattingTeamID == 40)
+# BBB <- left_join(BBB, Game)
+BBB$StartDate<-parse_date_time(BBB$StartDate, orders = c("mdy", "dmy", "ymd"))
+BBB <- BBB %>% dplyr:: filter(StartDate > as.Date("2016-01-01"))
+BBB <- BBB %>% filter(!grepl(18819 , LeagueID))
+
+
+
+
+#BatsmanStats
+
+# Total Runs
+PlayerStats <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanTotalRuns = last(BatsmanTotalRuns))
+colnames(PlayerStats)[1]<- "MatchID"
+colnames(PlayerStats)[2]<- "BatsmanID"
+colnames(PlayerStats)[3]<- "BatsmanRunsScoredInInnings"
+
+# Balls faced per innings
+#BallsFaced <- aggregate(BBB$BatsmanFaced, by=list(BBB$MatchID, BBB$BatsmanID), FUN=last)
+BallsFaced <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise (BallsFaced = last(BatsmanFaced)- first(BatsmanFaced))
+PlayerStats <- left_join(PlayerStats, BallsFaced)
+
+#boundaries scored
+BatsmanFours <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanFours= last(BatsmanFours))
+PlayerStats <- left_join(PlayerStats, BatsmanFours)
+
+#Sixes scored
+BatsmanSixes <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanSixes= last(BatsmanSixes))
+PlayerStats <- left_join(PlayerStats, BatsmanSixes)
+
+
+#dotballs faced
+BBB <- BBB %>% distinct()
+Dotballs <- BBB %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: filter(ScoreValue == 0)
+Dotballs <- Dotballs %>% distinct()
+Dotballs <- Dotballs %>% dplyr:: group_by(MatchID) %>%  dplyr:: count(BatsmanID)
+colnames(Dotballs)[3] <- "Dotballs"
+PlayerStats <- left_join(PlayerStats, Dotballs)
+PlayerStats <- PlayerStats %>% distinct()
+
+
+
+#PlayerNames
+
+PlayerStats <- left_join(PlayerStats, PlayerNames)
+PlayerStats <- PlayerStats %>% distinct()
+
+#leagues
+
+BBBLeagueID <- BBB %>% dplyr:: select(MatchID, LeagueID)
+PlayerStats <- left_join(PlayerStats, BBBLeagueID)
+PlayerStats <- PlayerStats %>% distinct()
+
+#date
+BBBdates <- BBB %>% dplyr:: select(MatchID, StartDate)
+PlayerStats <- left_join(PlayerStats, BBBdates)
+PlayerStats <- PlayerStats %>% distinct()
+
+dates <- as.POSIXct(PlayerStats$StartDate, format = "%m/%d/%Y %H:%M:%S")
+dates <- format(dates, format="%Y")
+PlayerStats$dates <- dates
+
+
+#roles
+PlayerStats <- PlayerStats %>% distinct()
+
+
+#First 5 Balls 
+
+First5Ball <- BBB %>% dplyr:: filter(BatsmanFaced <= 5)
+First5Balls <- First5Ball %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanFirst5BallRuns = last(BatsmanTotalRuns), First5BallsFaced = last(BatsmanFaced))
+First5Balls$BatsmanFirst5BallRuns <- as.double(First5Balls$BatsmanFirst5BallRuns)
+First5Balls$First5BallsFaced <- as.double(First5Balls$First5BallsFaced)
+First5Balls <- First5Balls %>% dplyr:: mutate(First5BallStrikeRate = (BatsmanFirst5BallRuns/First5BallsFaced)*100)
+
+PlayerStats <- left_join(PlayerStats, First5Balls)
+
+#powerPlay
+BallsInPowerPlay <- BBB %>% dplyr:: filter(InningsBalls <= 36 )
+RunsInPowerPlay <- BallsInPowerPlay %>% dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanPowerPlayRuns = last(BatsmanTotalRuns), PowerPlayBallsFaced = last(BatsmanFaced))
+
+#PlayerStats <- left_join(PlayerStats, BestPowerPlay)
+PowerPlayDates <- PlayerStats %>% dplyr:: select(BatsmanID,player, dates)
+RunsInPowerPlay <- left_join(RunsInPowerPlay, PowerPlayDates)
+RunsInPowerPlay <- RunsInPowerPlay %>% distinct()
+RunsInPowerPlay$BatsmanID <- as.integer(RunsInPowerPlay$BatsmanID)
+
+Noofinningsinpowerplay <- RunsInPowerPlay %>% dplyr:: group_by(dates) %>% dplyr:: count(player)
+colnames(Noofinningsinpowerplay)[3] <- "Noofinningsinpowerplayseason"
+
+RunsInPowerPlay$BatsmanPowerPlayRuns <- as.double(RunsInPowerPlay$BatsmanPowerPlayRuns)
+RunsInPowerPlay$PowerPlayBallsFaced <- as.double(RunsInPowerPlay$PowerPlayBallsFaced)
+
+
+
+
+
+PlayerStats <- left_join(PlayerStats, RunsInPowerPlay)
+PlayerStats <- left_join(PlayerStats,Noofinningsinpowerplay)
+PlayerStats <- PlayerStats[!is.na(PlayerStats$BatsmanID), ]
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(PowerPlayStrikeRate = (BatsmanPowerPlayRuns/PowerPlayBallsFaced) * 100)
+#PlayerStats <- left_join(PlayerStats, BallsFacedInPowerPlay)
+
+#middleovers 
+MiddleOvers <- BBB %>% dplyr:: filter(between(InningsBalls, 37,  89)) 
+MiddleOvers$BatsmanTotalRuns <- as.double(MiddleOvers$BatsmanTotalRuns)
+RunsInMiddleOvers <- MiddleOvers %>%  dplyr:: group_by(MatchID,BatsmanID) %>% dplyr:: summarise(BatsmanMiddleOverRuns =last(BatsmanTotalRuns) - first(BatsmanTotalRuns), MiddleOversBallsFaced = last(BatsmanFaced) - first(BatsmanFaced))
+Middleoverdates <- PlayerStats %>% dplyr:: select( BatsmanID, player, dates)
+RunsInMiddleOvers <- left_join(RunsInMiddleOvers, Middleoverdates)
+RunsInMiddleOvers <- RunsInMiddleOvers %>% distinct()
+RunsInMiddleOvers$BatsmanMiddleOverRuns <- as.double(RunsInMiddleOvers$BatsmanMiddleOverRuns)
+RunsInMiddleOvers$MiddleOversBallsFaced <- as.double(RunsInMiddleOvers$MiddleOversBallsFaced)
+Noofinningsinmiddleovers <- RunsInMiddleOvers %>% dplyr:: group_by(dates) %>% dplyr:: count(player)
+colnames(Noofinningsinmiddleovers)[3] <- "Noofinningsinmiddleoverseason"
+PlayerStats <- left_join(PlayerStats, RunsInMiddleOvers)
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(MiddleOversSR = ((BatsmanMiddleOverRuns/MiddleOversBallsFaced) * 100))
+
+PlayerStats <- left_join(PlayerStats, Noofinningsinmiddleovers)
+
+#deathOvers
+DeathOvers <- BBB %>% dplyr:: filter(InningsBalls >= 90)
+DeathOvers$BatsmanTotalRuns <- as.double(DeathOvers$BatsmanTotalRuns)
+RunsInDeathOvers <- DeathOvers %>%  dplyr:: group_by(MatchID, BatsmanID) %>% dplyr:: summarise(BatsmanDeathOverRuns = last(BatsmanTotalRuns) - first(BatsmanTotalRuns), DeathOversBallsFaced = (last(BatsmanFaced)- first(BatsmanFaced))-1)
+Deathoverdates <- PlayerStats %>% dplyr:: select( BatsmanID, player, dates)
+RunsInDeathOvers <- left_join(RunsInDeathOvers, Deathoverdates)
+RunsInDeathOvers <- RunsInDeathOvers %>% distinct()
+Noofinningsindeathovers <- RunsInDeathOvers %>% dplyr:: group_by(dates) %>% dplyr:: count(player)
+colnames(Noofinningsindeathovers)[3] <- "Noofinningsindeathoverseason"
+RunsInDeathOvers$BatsmanDeathOverRuns <- as.double(RunsInDeathOvers$BatsmanDeathOverRuns)
+RunsInDeathOvers$DeathOversBallsFaced <- as.double(RunsInDeathOvers$DeathOversBallsFaced)
+PlayerStats <- left_join(PlayerStats, RunsInDeathOvers)
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(PowerPlaySR = (BatsmanDeathOverRuns/DeathOversBallsFaced) * 100)
+
+PlayerStats <- left_join(PlayerStats, Noofinningsindeathovers)
+
+PlayerStats <- PlayerStats %>% dplyr:: mutate(DeathOversSR = ((BatsmanDeathOverRuns/DeathOversBallsFaced) * 100))
+
+PlayerStats <- PlayerStats %>% distinct()
+
+#boundary percentage
+PlayerStats$BatsmanSixes <- as.double(PlayerStats$BatsmanSixes)
+PlayerStats$BatsmanFours <- as.double(PlayerStats$BatsmanFours)
+PlayerStats$BatsmanRunsScoredInInnings <- as.double(PlayerStats$BatsmanRunsScoredInInnings)
+Boundaries <- PlayerStats %>% dplyr:: group_by(BatsmanID) %>% dplyr:: summarise(BatsmanTotalRuns = sum(BatsmanRunsScoredInInnings), fours = sum(BatsmanFours), sixes = sum(BatsmanSixes))
+Boundaries <- Boundaries %>% dplyr:: mutate( runsinfours = fours*4)
+Boundaries <- Boundaries %>% dplyr:: mutate(runsinsixes = sixes*6)
+Boundaries <- Boundaries %>% dplyr:: mutate(runsinbondaries = runsinfours+runsinsixes)
+Boundaries <- Boundaries %>% dplyr:: mutate(BoundaryPercentage = (runsinbondaries/BatsmanTotalRuns)*100) 
+Boundaries <- left_join(Boundaries, PlayerNames)
+
+#PlayerStats<- left_join(PlayerStats, Game)
+#PlayerStats <- PlayerStats %>% dplyr:: filter(StartDate > as.Date('2016-01-01'))
+PlayerStats <- left_join(PlayerStats,Boundaries)
+#Teams
+# colnames(Team)[2]<- "TeamID" 
+# Team$TeamID <- as.double(Team$TeamID)
+# TeamNames <- left_join(PlayerStatsTable, Team)
+# TeamsWithPlayerID <- TeamNames %>% dplyr::select(MatchID ,PlayerID, TeamID, team)
+# colnames(TeamsWithPlayerID)[2] <- "BatsmanID"
+# TeamsWithPlayerID$BatsmanID <- as.double(TeamsWithPlayerID$BatsmanID)
+# PlayerStats <- left_join(PlayerStats, TeamsWithPlayerID)
+# PlayerStats <- PlayerStats %>% distinct()
+
+#
+#number_of_innings <- data.frame(count(PlayerStats$player))
+
+number_of_innings <- PlayerStats %>% dplyr:: select(player, dates)
+number_of_innings <- number_of_innings %>% dplyr::group_by(dates) %>% dplyr:: count(player)
+number_of_innings_in_year <- number_of_innings %>% dplyr:: group_by(player ,dates) %>% dplyr::summarise(Noofinningsinseason = sum(n))
+number_of_innings_in_career <- number_of_innings %>% dplyr:: group_by(player) %>% dplyr::summarise(Noofinningsincareer = sum(n))
+PlayerStats <- left_join(PlayerStats, number_of_innings_in_year)
+PlayerStats <- left_join(PlayerStats, number_of_innings_in_career)
+
+#Notouts 
+Notouts <- BBB %>% dplyr:: select(MatchID ,BatsmanID, Dismissal)
+Notouts <- Notouts %>% distinct()
+Notouts <- left_join(Notouts, PlayerNames)
+Notouts <- Notouts %>% dplyr:: filter(Dismissal == "TRUE")
+Notouts <- Notouts %>% dplyr:: select(-BatsmanID)
+
+Notouts <- Notouts %>% dplyr:: group_by(MatchID) %>% dplyr:: count(player)
+Notouts <- Notouts %>% dplyr:: group_by(player) %>% dplyr:: summarise(NumberOfOuts = sum(n))
+PlayerStats <- left_join(PlayerStats, Notouts)
+PlayerStats <- PlayerStats %>% dplyr:: mutate(NotOuts = Noofinningsincareer - NumberOfOuts)
+
+
+#StrikeRate
+
+PlayerStats$BatsmanRunsScoredInInnings <- as.double(PlayerStats$BatsmanRunsScoredInInnings)
+StrikeRate <- PlayerStats %>% group_by(player) %>% dplyr:: summarise(BatsmanTotalRuns = sum(BatsmanRunsScoredInInnings), TotalBallsFaced = sum(BallsFaced), Noofinningsincareer, NotOuts)
+StrikeRate <- StrikeRate %>% distinct()
+StrikeRate$StrikeRate <- (StrikeRate$BatsmanTotalRuns/(StrikeRate$TotalBallsFaced+(StrikeRate$Noofinningsincareer-StrikeRate$NotOuts)))*100
+PlayerStats <- left_join(PlayerStats, StrikeRate)
+
+#Average
+Average <- PlayerStats %>% dplyr:: group_by(player) %>% dplyr:: summarise(TotalRuns = sum(BatsmanRunsScoredInInnings), Noofinningsincareer, NotOuts)
+Average <- Average %>% distinct()
+Average <- Average %>% dplyr:: mutate(InningsToAverage = Noofinningsincareer-NotOuts)
+Average <- Average %>% dplyr:: mutate(PlayerAverage = TotalRuns/InningsToAverage)
+Average <- Average %>% dplyr:: select(player, PlayerAverage)
+PlayerStats <- left_join(PlayerStats, Average)
+PlayerStats <- PlayerStats %>% distinct()
+PlayerStats <- PlayerStats %>% dplyr:: filter(Noofinningsincareer > 20)
+
+lastplayed <- PlayerStats %>% dplyr:: group_by(player) %>% dplyr:: filter(StartDate == max(StartDate))
+lastplayed <-lastplayed %>% dplyr:: select(player, StartDate)
+colnames(lastplayed)[2] <- "LastPlayed"
+PlayerStats <- left_join(PlayerStats, lastplayed)
+PlayerStats <- PlayerStats %>% distinct()
+PlayerStats <- PlayerStats %>% dplyr:: filter(LastPlayed > as.Date("2016-01-01"))
+
+#Ad hoc exponential smoothing
+
+oldgames <- read.csv('StartCsv.csv')
+middlegames <- read.csv("MidCsv.csv")
+newgames <- read.csv("EndCsv.csv")
+
+oldgames <- oldgames %>% dplyr:: mutate(gamestage = "old")
+middlegames <- middlegames %>% dplyr:: mutate(gamestage = "middle")
+newgames <- newgames %>% dplyr:: mutate(gamestage = "new")
+
+SortedGames <- rbind(oldgames, middlegames, newgames)
+
+
+ExpPlayerStats <- PlayerStats
+recentweight <- 0.7
+middleweight <- 0.2
+oldweight <- 0.1
+
+indexpowerplay <- is.na(SortedGames$PowerPlayBallsFaced)
+SortedGames$PowerPlayBallsFaced[indexpowerplay]<- 0
+
+indexBF <- is.na(SortedGames$BallsFaced)
+SortedGames$BallsFaced[indexBF]<- 0
+
+indexDeath <- is.na(SortedGames$DeathOversBallsFaced)
+SortedGames$DeathOversBallsFaced[indexDeath] <- 0
+
+indexmiddle <- is.na(SortedGames$MiddleOversBallsFaced)
+SortedGames$MiddleOversBallsFaced[indexmiddle]<-0
+
+indexpowerplayruns <- is.na(SortedGames$BatsmanPowerPlayRuns)
+SortedGames$BatsmanPowerPlayRuns[indexpowerplay]<- 0
+
+indexRunsScored <- is.na(SortedGames$BatsmanRunsScoredInInnings)
+SortedGames$BatsmanRunsScoredInInnings[indexRunsScored]<- 0
+
+indexDeathruns <- is.na(SortedGames$BatsmanDeathOverRuns)
+SortedGames$BatsmanDeathOverRuns[indexDeathruns] <- 0
+
+indexmiddleruns <- is.na(SortedGames$BatsmanMiddleOverRuns)
+SortedGames$BatsmanMiddleOverRuns[indexmiddleruns]<-0
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPballs = case_when(
+  gamestage == "new" ~ BallsFaced*recentweight,
+  gamestage ==  "middle" ~ BallsFaced*middleweight,
+  gamestage == "old" ~ BallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPpowerplaybf = case_when(
+  gamestage == "new" ~ PowerPlayBallsFaced*recentweight,
+  gamestage ==  "middle" ~ PowerPlayBallsFaced*middleweight,
+  gamestage == "old" ~ PowerPlayBallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPmiddlebf = case_when(
+  gamestage == "new" ~ MiddleOversBallsFaced*recentweight,
+  gamestage ==  "middle" ~ MiddleOversBallsFaced*middleweight,
+  gamestage == "old" ~ MiddleOversBallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPdeathbf = case_when(
+  gamestage == "new" ~ DeathOversBallsFaced*recentweight,
+  gamestage ==  "middle" ~ DeathOversBallsFaced*middleweight,
+  gamestage == "old" ~ DeathOversBallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPballs = case_when(
+  gamestage == "new" ~ BallsFaced*recentweight,
+  gamestage ==  "middle" ~ BallsFaced*middleweight,
+  gamestage == "old" ~ BallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPpowerplaybf = case_when(
+  gamestage == "new" ~ PowerPlayBallsFaced*recentweight,
+  gamestage ==  "middle" ~ PowerPlayBallsFaced*middleweight,
+  gamestage == "old" ~ PowerPlayBallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPmiddlebf = case_when(
+  gamestage == "new" ~ MiddleOversBallsFaced*recentweight,
+  gamestage ==  "middle" ~ MiddleOversBallsFaced*middleweight,
+  gamestage == "old" ~ MiddleOversBallsFaced*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPpowerplayruns = case_when(
+  gamestage == "new" ~ BatsmanPowerPlayRuns*recentweight,
+  gamestage ==  "middle" ~  BatsmanPowerPlayRuns*middleweight,
+  gamestage == "old" ~  BatsmanPowerPlayRuns*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPmiddleoverruns = case_when(
+  gamestage == "new" ~ BatsmanMiddleOverRuns*recentweight,
+  gamestage ==  "middle" ~  BatsmanMiddleOverRuns*middleweight,
+  gamestage == "old" ~  BatsmanMiddleOverRuns*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPdeathoverruns = case_when(
+  gamestage == "new" ~ BatsmanDeathOverRuns*recentweight,
+  gamestage ==  "middle" ~  BatsmanDeathOverRuns*middleweight,
+  gamestage == "old" ~  BatsmanDeathOverRuns*oldweight))
+
+SortedGames <- SortedGames %>% dplyr:: mutate(EXPbatsmanruns = case_when(
+  gamestage == "new" ~ BatsmanRunsScoredInInnings*recentweight,
+  gamestage ==  "middle" ~  BatsmanRunsScoredInInnings*middleweight,
+  gamestage == "old" ~  BatsmanRunsScoredInInnings*oldweight))
+
+
+SortedBF <- SortedGames %>% dplyr:: group_by(player) %>% dplyr:: summarise(TotalBF = sum(EXPballs), PowerPlayBF = sum(EXPpowerplaybf), MiddleBF = sum(EXPmiddlebf), DeathBF= sum(EXPdeathbf), TotalRuns = sum(EXPbatsmanruns),
+                                                                           PowerplayRuns = sum(EXPpowerplayruns), MiddleRuns = sum(EXPmiddleoverruns), DeathRuns = sum(EXPdeathoverruns))
+TotalsBF <- PlayerStats %>% dplyr:: group_by(player) %>% dplyr:: summarise(TotalBF = sum(BallsFaced), PowerPlayBF = sum(PowerPlayBallsFaced), MiddleBF = sum(MiddleOversBallsFaced), DeathBF= sum(DeathOversBallsFaced), TotalRuns = sum(BatsmanRunsScoredInInnings),
+                                                                           PowerplayRuns = sum(BatsmanPowerPlayRuns), MiddleRuns = sum(BatsmanMiddleOverRuns), DeathRuns = sum(BatsmanDeathOverRuns))
+
+
+# SortedBF$TotalBF <- as.double(TotalsBF$TotalBF)
+# SortedBF$PowerPlayBF <- as.double(TotalsBF$PowerPlayBF)
+SortedBF <- SortedBF %>% dplyr:: mutate(PowerplayProportion = PowerPlayBF/TotalBF)
+SortedBF <- SortedBF %>% dplyr:: mutate(MiddleProportion = MiddleBF/TotalBF)
+SortedBF <- SortedBF %>% dplyr:: mutate(DeathProportion = DeathBF/TotalBF)
+SortedBF <- SortedBF %>% dplyr:: mutate(PowerPlayRunsProportion = PowerplayRuns/TotalRuns)
+SortedBF <- SortedBF %>% dplyr:: mutate(MiddleRunsProportion = MiddleRuns/TotalRuns)
+SortedBF <- SortedBF %>% dplyr:: mutate(DeathRunsProportion = DeathRuns/TotalRuns)
+SortedBF <- SortedBF %>% dplyr:: select(player, PowerplayProportion, MiddleProportion, DeathProportion, PowerPlayRunsProportion, MiddleRunsProportion, DeathRunsProportion)
+TotalsBF <- SortedBF
+
+Entered <- BBB %>% group_by(MatchID, BattingTeamID, BatsmanID) %>%
+  dplyr:: summarise(BallsEntered = min(InningsBalls))
+PlayerStats <- left_join(PlayerStats, Entered)
+AverageBallsEntered <- PlayerStats %>% dplyr:: group_by(BatsmanID) %>% dplyr:: summarise(AvgBallsEntered = mean(BallsEntered))
+PlayerNames <- PlayerNames %>% distinct()
+TotalsBF <- left_join(TotalsBF, PlayerNames)
+TotalsBF <- left_join(TotalsBF, AverageBallsEntered)
+TotalsBF <- TotalsBF %>% distinct()
+
+TotalsBF <- TotalsBF %>% na.omit(TotalsBF$AvgBallsEntered)
+TotalsBF$MaxPhase<-pmax(TotalsBF$PowerplayProportion, TotalsBF$MiddleProportion, TotalsBF$DeathProportion)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(MostBallsFaced = case_when(
+  MaxPhase == PowerplayProportion ~ "Powerplay",
+  MaxPhase == MiddleProportion ~ "Middle Overs",
+  MaxPhase == DeathProportion ~ "Death Overs"))
+
+TotalsBF$Maxrunsscored<-pmax(TotalsBF$PowerPlayRunsProportion, TotalsBF$MiddleRunsProportion, TotalsBF$DeathRunsProportion)
+TotalsBF <- TotalsBF %>% dplyr:: mutate(MostRunsScored = case_when(
+  Maxrunsscored == PowerPlayRunsProportion ~ "Powerplay",
+  Maxrunsscored == MiddleRunsProportion ~ "Middle Overs",
+  Maxrunsscored == DeathRunsProportion ~ "Death Overs"))
+
+TotalsBF <- TotalsBF %>% dplyr:: select(-BatsmanID)
+TotalsBF <- TotalsBF %>% distinct()
+
+TotalsBF$PowerplayProportion <- ifelse(TotalsBF$PowerplayProportion < 0, 0, TotalsBF$PowerplayProportion)
+TotalsBF$MiddleProportion <- ifelse(TotalsBF$MiddleProportion < 0, 0, TotalsBF$MiddleProportion)
+TotalsBF$DeathProportion <- ifelse(TotalsBF$DeathProportion < 0, 0, TotalsBF$DeathProportion)
+
+TotalsBF$PowerPlayRunsProportion <- ifelse(TotalsBF$PowerPlayRunsProportion < 0, 0, TotalsBF$PowerPlayRunsProportion)
+TotalsBF$MiddleRunsProportion <- ifelse(TotalsBF$MiddleRunsProportion< 0, 0, TotalsBF$MiddleRunsProportion)
+TotalsBF$DeathRunsProportion<- ifelse(TotalsBF$DeathRunsProportion < 0, 0, TotalsBF$DeathRunsProportion)
+
+TotalsBF$Type <- paste0(TotalsBF$MostBallsFaced, TotalsBF$MostRunsScored, sep = "  ")
+#table to cluster and cleaning 
+
+Stats <- PlayerStats
+is.na(Stats)<-sapply(Stats, is.infinite)
+StrikeRateNa <- is.na(Stats$StrikeRate)
+Stats$StrikeRate[StrikeRateNa]<- 0
+
+BoundaryPercentageNa <- is.na(Stats$BoundaryPercentage)
+Stats$BoundaryPercentage[BoundaryPercentageNa]<- 0
+
+First5BallNa <- is.na(Stats$First5BallStrikeRate)
+Stats$First5BallStrikeRate[First5BallNa]<- 0
+
+
+Stats <- Stats %>% dplyr:: group_by(player) %>% dplyr:: summarise(StrikeRate = mean(StrikeRate), BoundaryPercentage = mean(BoundaryPercentage), First5Ball = mean(First5BallStrikeRate))
+TableTocluster <- left_join(TotalsBF, Stats)
+is.na(TableTocluster)<-sapply(TableTocluster, is.infinite)
+nastrikerate <- is.na(TableTocluster$StrikeRate)
+TableTocluster$StrikeRate[nastrikerate]<- 0
+
+#Clustering 
+
+DataToCluster <- TableTocluster %>% dplyr:: select(PowerplayProportion, PowerPlayRunsProportion, DeathProportion, DeathRunsProportion,  MiddleProportion, MiddleRunsProportion, AvgBallsEntered)
+#DataToCluster <- DataToCluster %>% scale()
+
+clusterdata <- kmeans(DataToCluster, 10)
+summary(clusterdata)
+clusterdata <- data.frame(TableTocluster$player, DataToCluster$PowerplayProportion, DataToCluster$PowerPlayRunsProportion, DataToCluster$DeathProportion, DataToCluster$DeathRunsProportion, DataToCluster$MiddleProportion, DataToCluster$MiddleRunsProportion, DataToCluster$AvgBallsEntered, clusterdata$cluster)
+colnames(clusterdata)<- c("player", "PowerplayBFProportion", "PowerPlayRunsProportion", "DeathBFProportion", "DeathRunsProportion", "MiddleBFProportion", "MiddleRunsProportion", "AvgBallsEntered", "cluster_name" )
+
+rating_cluster<-clusterdata %>% dplyr::select(-player)
+rating_cluster<-rating_cluster%>% group_by(cluster_name) %>% summarise_each(mean)
+
+rating_cluster<-rating_cluster[order(rating_cluster$AvgBallsEntered, decreasing = FALSE), ]
+
+rating_cluster<-data.frame(rating_cluster,c(1:10))
+colnames(rating_cluster)[9]<- "Profile_Cluster_Number"
+rating_cluster <- rating_cluster %>% dplyr:: select(cluster_name, Profile_Cluster_Number)
+clusterdata <- left_join(clusterdata, rating_cluster)
+clusterdata <- clusterdata %>% dplyr:: select(-cluster_name)
+
+#Within Clusters Clustering
+
+Profile_Cluster_Number1 <- clusterdata %>% dplyr:: filter(Profile_Cluster_Number == 1 | Profile_Cluster_Number == 2 | Profile_Cluster_Number == 3)
+BF <- PlayerStats
+
+is.na(BF)<-sapply(BF, is.infinite)
+StrikeRateNa <- is.na(BF$StrikeRate)
+BF$StrikeRate[StrikeRateNa]<- 0
+
+BoundaryPercentageNa <- is.na(BF$BoundaryPercentage)
+BF$BoundaryPercentage[BoundaryPercentageNa]<- 0
+
+First5BallNa <- is.na(BF$First5BallStrikeRate)
+BF$First5BallStrikeRate[First5BallNa]<- 0
+
+
+
+BF <- BF %>% dplyr:: group_by(player) %>% dplyr:: summarise(StrikeRate = mean(StrikeRate), BoundaryPercentage = mean(BoundaryPercentage), First5Ball = mean(First5BallStrikeRate),BallsFaced = mean(BallsFaced), PlayerAverage)
+BF <- BF %>% distinct()
+
+
+Profile_Cluster_Number1 <- left_join(Profile_Cluster_Number1, BF)
+Cluster1 <- Profile_Cluster_Number1 %>% dplyr:: select(StrikeRate, First5Ball, BoundaryPercentage, PlayerAverage)
+ScaledCluster1 <- Cluster1 %>% scale()
+ScaledCluster1 <-data.frame(ScaledCluster1)
+ScaledCluster1$StrikeRate <- ScaledCluster1$StrikeRate*0.4
+ScaledCluster1$PlayerAverage <- ScaledCluster1$PlayerAverage*0.4
+ScaledCluster1$First5Ball <-ScaledCluster1$First5Ball*0.05
+ScaledCluster1$BoundaryPercentage <-ScaledCluster1$BoundaryPercentage*0.15
+
+ClusterTopOrder <- kmeans(ScaledCluster1, 5)
+ClusterTopOrder <- data.frame(Profile_Cluster_Number1$player, Cluster1$StrikeRate, Cluster1$First5Ball, Cluster1$BoundaryPercentage, Cluster1$PlayerAverage, ClusterTopOrder$cluster)
+ClusterTopOrder <- ClusterTopOrder %>% distinct()
+colnames(ClusterTopOrder)<- c("player", "StrikeRate", "First5Ball", "Boundary Percentage", "average","cluster_name" )
+
+rating_cluster_openers<- ClusterTopOrder %>% dplyr::select(-player)
+rating_cluster_openers<-rating_cluster_openers%>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_openers<-rating_cluster_openers[order(rating_cluster_openers$StrikeRate,rating_cluster_openers$average, rating_cluster_openers$First5Ball, rating_cluster_openers$`Boundary Percentage`, decreasing = FALSE), ]
+rating_cluster_openers<-data.frame(rating_cluster_openers,c(1:5))
+colnames(rating_cluster_openers)[6]<- "Profile_Cluster_Number1"
+
+rating_cluster_openers <- rating_cluster_openers %>% dplyr:: select(cluster_name, Profile_Cluster_Number1)
+ClusterTopOrder <- left_join(ClusterTopOrder, rating_cluster_openers)
+ClusterTopOrder$classification <- "Average"
+
+ClusterTopOrder$Profile_Cluster_Number1 <- ifelse(ClusterTopOrder$average > 30 & ClusterTopOrder$StrikeRate > 140, 4, ClusterTopOrder$Profile_Cluster_Number1)
+ClusterTopOrder$classification <- ifelse(ClusterTopOrder$Profile_Cluster_Number1 == 3, "average", ClusterTopOrder$classification)
+ClusterTopOrder$classification <- ifelse(ClusterTopOrder$Profile_Cluster_Number1 == 5, "Goes Hard From the Start/comprimise average slightly", ClusterTopOrder$classification)
+ClusterTopOrder$classification <- ifelse(ClusterTopOrder$Profile_Cluster_Number1 == 4, "Top tier", ClusterTopOrder$classification)
+ClusterTopOrder$classification <- ifelse(ClusterTopOrder$Profile_Cluster_Number1 == 2, "Really good average decent strike rate", ClusterTopOrder$classification)
+ClusterTopOrder$classification <- ifelse(ClusterTopOrder$Profile_Cluster_Number1 == 1, "Dud", ClusterTopOrder$classification)
+
+
+
+
+BallsFaced <- BF %>% dplyr:: group_by(player) %>% dplyr:: summarise(BallsFaced = mean(BallsFaced))
+
+BallsFaced <- BallsFaced %>% dplyr:: select(player, BallsFaced)
+ClusterTopOrder <- left_join(ClusterTopOrder, BallsFaced)
+ClusterTopOrder <- ClusterTopOrder %>% distinct()
+q <- write.csv(ClusterTopOrder, "TopOrderCluster.csv")
+
+
+#################################################################################################################################################################################################
+#middle order cluster analysis 
+
+Profile_Cluster_Number2 <- clusterdata %>% dplyr:: filter( Profile_Cluster_Number == 4 | Profile_Cluster_Number == 5 | Profile_Cluster_Number == 6 )
+MiddleOrderPlayerStats <- PlayerStats
+
+MiddleOrderPlayerStats <- MiddleOrderPlayerStats %>% dplyr:: group_by(player) %>% dplyr:: summarise(StrikeRate = mean(StrikeRate), BoundaryPercentage = mean(BoundaryPercentage), First5Ball = mean(First5BallStrikeRate),BallsFaced = mean(BallsFaced), PlayerAverage)
+MiddleOrderPlayerStats <- MiddleOrderPlayerStats %>% distinct()
+Profile_Cluster_Number2 <- left_join(Profile_Cluster_Number2, MiddleOrderPlayerStats)
+
+
+is.na(Profile_Cluster_Number2)<-sapply(Profile_Cluster_Number2, is.infinite)
+StrikeRateNa <- is.na(Profile_Cluster_Number2$StrikeRate)
+Profile_Cluster_Number2$StrikeRate[StrikeRateNa]<- 0
+
+BoundaryPercentageNa <- is.na(Profile_Cluster_Number2$BoundaryPercentage)
+Profile_Cluster_Number2$BoundaryPercentage[BoundaryPercentageNa]<- 0
+
+First5BallNa <- is.na(Profile_Cluster_Number2$First5Ball)
+Profile_Cluster_Number2$First5Ball[First5BallNa]<- 0
+
+playeravgNa <- is.na(Profile_Cluster_Number2$PlayerAverage)
+Profile_Cluster_Number2$PlayerAverage[playeravgNa]<- 0
+
+
+Cluster2 <- Profile_Cluster_Number2 %>% dplyr:: select(StrikeRate, First5Ball, BoundaryPercentage, PlayerAverage)
+ScaledCluster2 <- Cluster2 %>% scale()
+ScaledCluster2 <-data.frame(ScaledCluster2)
+ScaledCluster2$StrikeRate <- ScaledCluster2$StrikeRate*0.5
+ScaledCluster2$Average <- ScaledCluster2$PlayerAverage*0.3
+ScaledCluster2$First5Ball <- ScaledCluster2$First5Ball * 0.05
+ScaledCluster2$BoundaryPercentage <-ScaledCluster2$BoundaryPercentage*0.15
+
+
+ClusterMiddleOrderPlayers <- kmeans(ScaledCluster2, 5,iter.max = 20 ,nstart = 50)
+
+ClusterMiddleOrderPlayers <- data.frame(Profile_Cluster_Number2$player, Cluster2$StrikeRate, Cluster2$First5Ball, Cluster2$BoundaryPercentage, Cluster2$PlayerAverage, ClusterMiddleOrderPlayers$cluster)
+ClusterMiddleOrderPlayers <- ClusterMiddleOrderPlayers %>% distinct()
+colnames(ClusterMiddleOrderPlayers)<- c("player", "StrikeRate", "First5Ball", "Boundary Percentage", "average","cluster_name" )
+
+
+rating_cluster_middleorder <- ClusterMiddleOrderPlayers %>% dplyr:: select(-player)
+rating_cluster_middleorder<- rating_cluster_middleorder%>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_middleorder<-rating_cluster_middleorder[order(rating_cluster_middleorder$StrikeRate,rating_cluster_middleorder$average, rating_cluster_middleorder$First5Ball, rating_cluster_middleorder$`Boundary Percentage`, decreasing = FALSE), ]
+rating_cluster_middleorder<-data.frame(rating_cluster_middleorder,c(1:5))
+colnames(rating_cluster_middleorder)[6]<- "Profile_Cluster_Number2"
+rating_cluster_middleorder <- rating_cluster_middleorder %>% dplyr:: select(cluster_name, Profile_Cluster_Number2 )
+
+ClusterMiddleOrderPlayers <- left_join(ClusterMiddleOrderPlayers, rating_cluster_middleorder)
+#ClusterMiddleOrderPlayers$Profile_Cluster_Number2 <- ifelse(ClusterMiddleOrderPlayers$average > 37 & ClusterMiddleOrderPlayers$StrikeRate > 130, 5, ClusterMiddleOrderPlayers$Profile_Cluster_Number2)
+ClusterMiddleOrderPlayers$Profile_Cluster_Number2 <- ifelse((ClusterMiddleOrderPlayers$average + ClusterMiddleOrderPlayers$StrikeRate) > 170  & ClusterMiddleOrderPlayers$Profile_Cluster_Number2 != 5, 5, ClusterMiddleOrderPlayers$Profile_Cluster_Number2)
+ClusterMiddleOrderPlayers$Profile_Cluster_Number2 <- ifelse( ClusterMiddleOrderPlayers$StrikeRate < 130  & ClusterMiddleOrderPlayers$Profile_Cluster_Number2 == 5, 4, ClusterMiddleOrderPlayers$Profile_Cluster_Number2)
+ClusterMiddleOrderPlayers$Profile_Cluster_Number2 <- ifelse(ClusterMiddleOrderPlayers$average < 20  & ClusterMiddleOrderPlayers$Profile_Cluster_Number2 == 5, 3, ClusterMiddleOrderPlayers$Profile_Cluster_Number2)
+ClusterMiddleOrderPlayers$Profile_Cluster_Number2 <- ifelse(ClusterMiddleOrderPlayers$StrikeRate < 125  & ClusterMiddleOrderPlayers$Profile_Cluster_Number2 == 4, 3, ClusterMiddleOrderPlayers$Profile_Cluster_Number2)
+
+ClusterMiddleOrderPlayers$classification <- "Average"
+ClusterMiddleOrderPlayers$classification <- ifelse(ClusterMiddleOrderPlayers$Profile_Cluster_Number2 == 5, "Excellent", ClusterMiddleOrderPlayers$classification)
+ClusterMiddleOrderPlayers$classification <- ifelse(ClusterMiddleOrderPlayers$Profile_Cluster_Number2== 3, "Good", ClusterMiddleOrderPlayers$classification)
+ClusterMiddleOrderPlayers$classification <- ifelse(ClusterMiddleOrderPlayers$Profile_Cluster_Number2== 4, "Very Good", ClusterMiddleOrderPlayers$classification)
+ClusterMiddleOrderPlayers$classification <- ifelse(ClusterMiddleOrderPlayers$Profile_Cluster_Number2 == 2, "Poor", ClusterMiddleOrderPlayers$classification)
+ClusterMiddleOrderPlayers$classification <- ifelse(ClusterMiddleOrderPlayers$Profile_Cluster_Number2 == 1, "Dud", ClusterMiddleOrderPlayers$classification)
+
+
+
+
+x <- write.csv(ClusterMiddleOrderPlayers, "MiddleOrderCluster.csv")
+
+###############################################################################################################################################################
+#lower middle order cluster
+
+Profile_Cluster_Number3 <- clusterdata %>% dplyr:: filter(Profile_Cluster_Number == 7 | Profile_Cluster_Number == 8 |Profile_Cluster_Number == 9 )
+LowerMiddleOrderPlayerStats <- PlayerStats
+
+LowerMiddleOrderPlayerStats <- LowerMiddleOrderPlayerStats %>% dplyr:: group_by(player) %>% dplyr:: summarise(StrikeRate = mean(StrikeRate), BoundaryPercentage = mean(BoundaryPercentage), First5Ball = mean(First5BallStrikeRate),BallsFaced = mean(BallsFaced),Average = mean(BatsmanRunsScoredInInnings), PlayerAverage)
+LowerMiddleOrderPlayerStats <- LowerMiddleOrderPlayerStats %>% distinct()
+Profile_Cluster_Number3 <- left_join(Profile_Cluster_Number3, LowerMiddleOrderPlayerStats)
+
+is.na(Profile_Cluster_Number3)<-sapply(Profile_Cluster_Number3, is.infinite)
+StrikeRateNa <- is.na(Profile_Cluster_Number3$StrikeRate)
+Profile_Cluster_Number3$StrikeRate[StrikeRateNa]<- 0
+
+BoundaryPercentageNa <- is.na(Profile_Cluster_Number3$BoundaryPercentage)
+Profile_Cluster_Number3$BoundaryPercentage[BoundaryPercentageNa]<- 0
+
+First5BallNa <- is.na(Profile_Cluster_Number3$First5Ball)
+Profile_Cluster_Number3$First5Ball[First5BallNa]<- 0
+
+playeravgNa <- is.na(Profile_Cluster_Number3$PlayerAverage)
+Profile_Cluster_Number3$PlayerAverage[playeravgNa]<- 0
+
+
+cluster3 <- Profile_Cluster_Number3 %>% dplyr:: select(StrikeRate, First5Ball, BoundaryPercentage, PlayerAverage)
+Scaledcluster3 <- cluster3 %>% scale()
+Scaledcluster3 <-data.frame(Scaledcluster3)
+Scaledcluster3$StrikeRate <- Scaledcluster3$StrikeRate*0.5
+Scaledcluster3$PlayerAverage <- Scaledcluster3$PlayerAverage*0.3
+Scaledcluster3$First5Ball <- Scaledcluster3$First5Ball * 0.15
+Scaledcluster3$BoundaryPercentage <-Scaledcluster3$BoundaryPercentage* 0.15
+
+LowerMiddleOrderPlayers <- kmeans(Scaledcluster3, 5)
+
+LowerMiddleOrderPlayers <- data.frame(Profile_Cluster_Number3$player, cluster3$StrikeRate, cluster3$First5Ball, cluster3$BoundaryPercentage, cluster3$PlayerAverage, LowerMiddleOrderPlayers$cluster)
+LowerMiddleOrderPlayers <- LowerMiddleOrderPlayers %>% distinct()
+colnames(LowerMiddleOrderPlayers)<- c("player", "StrikeRate", "First5Ball", "Boundary Percentage", "average","cluster_name" )
+
+
+rating_cluster_lowermiddleorder <- LowerMiddleOrderPlayers %>% dplyr:: select(-player)
+rating_cluster_lowermiddleorder<- rating_cluster_lowermiddleorder%>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_lowermiddleorder<-rating_cluster_lowermiddleorder[order(rating_cluster_lowermiddleorder$StrikeRate,rating_cluster_lowermiddleorder$average, rating_cluster_lowermiddleorder$First5Ball, rating_cluster_lowermiddleorder$`Boundary Percentage`, decreasing = FALSE), ]
+rating_cluster_lowermiddleorder<-data.frame(rating_cluster_lowermiddleorder,c(1:5))
+colnames(rating_cluster_lowermiddleorder)[6]<- "Profile_Cluster_Number3"
+rating_cluster_lowermiddleorder <- rating_cluster_lowermiddleorder %>% dplyr:: select(cluster_name, Profile_Cluster_Number3 )
+
+LowerMiddleOrderPlayers <- left_join(LowerMiddleOrderPlayers, rating_cluster_lowermiddleorder)
+
+LowerMiddleOrderPlayers$Profile_Cluster_Number3 <- ifelse((LowerMiddleOrderPlayers$average + LowerMiddleOrderPlayers$StrikeRate) > 170  & LowerMiddleOrderPlayers$Profile_Cluster_Number3 != 5, 5, LowerMiddleOrderPlayers$Profile_Cluster_Number3)
+LowerMiddleOrderPlayers$Profile_Cluster_Number3 <- ifelse(LowerMiddleOrderPlayers$average > 30 & LowerMiddleOrderPlayers$Profile_Cluster_Number3 == 3, 5, LowerMiddleOrderPlayers$Profile_Cluster_Number3)
+
+LowerMiddleOrderPlayers$classification <- "Average"
+LowerMiddleOrderPlayers$classification <- ifelse(LowerMiddleOrderPlayers$Profile_Cluster_Number3 == 5, "Excellent", LowerMiddleOrderPlayers$classification)
+LowerMiddleOrderPlayers$classification <- ifelse(LowerMiddleOrderPlayers$Profile_Cluster_Number3== 4, "Good", LowerMiddleOrderPlayers$classification)
+LowerMiddleOrderPlayers$classification <- ifelse(LowerMiddleOrderPlayers$Profile_Cluster_Number3== 3, "Average ", LowerMiddleOrderPlayers$classification)
+LowerMiddleOrderPlayers$classification <- ifelse(LowerMiddleOrderPlayers$Profile_Cluster_Number3 == 2, "Poor", LowerMiddleOrderPlayers$classification)
+LowerMiddleOrderPlayers$classification <- ifelse(LowerMiddleOrderPlayers$Profile_Cluster_Number3 == 1, "Dud", LowerMiddleOrderPlayers$classification)
+
+s <-  write.csv(LowerMiddleOrderPlayers , "LowerMidleOrderCluster.csv")
+
+
+############################################################################################################################################################################################################################################
+#Bowler Oppurtunity 
+# team_1<- PlayerNames
+# colnames(PlayerNames)[2] <- "BowlerID" 
+# team_1 <- team_1 %>% select(Player)
+# team_1 <- as.list(team_1)
+# 
+# 
+# 
+# 
+# overs_balls<-seq(from=0, to=120, by= 6)
+# overs_balls<- data.frame(overs_balls, c(0:20))
+# 
+# 
+# 
+# recent_bbb<-BBB %>% filter(StartDate > as.Date("2016-01-01"))
+# recent_bbb<- left_join(recent_bbb, PlayerNames)
+# recent_bbb<- recent_bbb %>% distinct()
+# colnames(overs_balls)[1] <- "InningsRemainingBalls"
+# colnames(overs_balls)[2] <- "Over1"
+# 
+# b1_data<- left_join(recent_bbb, overs_balls)
+# b1_data<-b1_data %>% select(player,Over1,MatchID,StartDate)
+# b1_data<- na.omit(b1_data)
+# b1_data<- b1_data %>% dplyr:: mutate(over = Over1 + 1)
+# 
+# b1_data<-b1_data %>% dplyr::select(player ,over)
+# b1_data<-b1_data  %>%  group_by(player,over) %>% count()
+# b1_total<-b1_data %>% dplyr::select(player,freq) %>% group_by(player) %>% summarise_each(sum)
+# colnames(b1_total)[2]<-"total_overs"
+# 
+# b1_data<-left_join(b1_data,b1_total)
+# b1_data<- b1_data %>% mutate(prop=freq/total_overs)
+# 
+# PowerPlayPhase <- b1_data %>% dplyr:: filter(total_overs > 50)
+# PowerPlayPhase <- PowerPlayPhase %>% dplyr:: filter(over < 7)
+
+##################################################################################
+colnames(PlayerNames)[2]<- "BowlerID"
+BBB <- BBB %>% dplyr:: select(-player)
+BBB <- left_join(BBB, PlayerNames)
+PowerPlayPhase <- BBB %>% dplyr:: filter(InningsBalls <= 36 )
+
+
+
+lastplayed <- PowerPlayPhase %>% dplyr:: group_by(player) %>% dplyr:: filter(StartDate == max(StartDate))
+lastplayed <-lastplayed %>% dplyr:: select(player, StartDate)
+colnames(lastplayed)[2] <- "LastPlayed"
+PowerPlayPhase <- left_join(PowerPlayPhase, lastplayed)
+PowerPlayPhase <- PowerPlayPhase %>% distinct()
+PowerPlayPhase <- PowerPlayPhase %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+
+
+
+
+
+
+
+
+BowlerBalls <- PowerPlayPhase %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(player)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(player) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Players
+
+BowlerStats <- BowlerBalls
+BowlerStats <- BowlerStats %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- PowerPlayPhase %>% dplyr:: group_by(MatchID, player) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats <- subset(BowlerStats , select = c("player", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats)[1]<- "player"
+BowlerStats <- BowlerStats %>% dplyr::: group_by(player) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats <- BowlerStats %>% distinct()
+
+# average and low ball filtering
+PowerPlayBowlerStats <- BowlerStats %>% dplyr:: filter(BowlerBallsBowled > 150)
+PowerPlayBowlerStats <-  PowerPlayBowlerStats %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+PowerPlayBowlerStats <- PowerPlayBowlerStats %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+PowerPlaydotballs <- PowerPlayPhase %>% dplyr:: filter(ScoreValue == 0)
+PowerPlaydotballs <- PowerPlaydotballs %>% distinct()
+PowerPlaydotballs <- PowerPlaydotballs %>% dplyr:: group_by(MatchID, player) %>% dplyr:: count(player)
+PowerPlaydotballs <- PowerPlaydotballs %>% dplyr:: group_by(player) %>% dplyr:: summarise(dotballs = sum(n))
+PowerPlayBowlerStats <- left_join(PowerPlayBowlerStats, PowerPlaydotballs)
+PowerPlayBowlerStats <- PowerPlayBowlerStats %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+PowerPlayBowlerStats <- PowerPlayBowlerStats %>% dplyr:: mutate(StrikeRate = BowlerBallsBowled/BowlerWicketsTaken)
+
+Bowlercluster1 <- subset(PowerPlayBowlerStats, select = c("BowlingAvg", "EconRate", "Dotballpercentage", "StrikeRate"))
+ScaledBowlerCluster1 <- Bowlercluster1 %>% scale()
+ScaledBowlerCluster1 <- as.data.frame(ScaledBowlerCluster1)
+ScaledBowlerCluster1$BowlingAvg <- ScaledBowlerCluster1$BowlingAvg*0.4
+ScaledBowlerCluster1$EconRate <- ScaledBowlerCluster1$BowlingAvg*0.3
+ScaledBowlerCluster1$Dotballpercentage <- ScaledBowlerCluster1$Dotballpercentage*0.15
+ScaledBowlerCluster1$StrikeRate <- ScaledBowlerCluster1$StrikeRate*0.15
+
+PowerPlayBowlersCluster <- kmeans(ScaledBowlerCluster1, 5)
+PowerPlayBowlersCluster <- data.frame(PowerPlayBowlerStats$player, PowerPlayBowlerStats$EconRate, PowerPlayBowlerStats$Dotballpercentage, PowerPlayBowlerStats$BowlingAvg, PowerPlayBowlerStats$StrikeRate, PowerPlayBowlersCluster$cluster)
+colnames(PowerPlayBowlersCluster)<- c("player", "EconRate", "Dotballpercentage", "average", "StrikeRate", "cluster_name" )
+
+rating_cluster_powerplaybowlers <- PowerPlayBowlersCluster %>% dplyr:: select(-player)
+rating_cluster_powerplaybowlers<- rating_cluster_powerplaybowlers %>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_powerplaybowlers<-rating_cluster_powerplaybowlers[order(rating_cluster_powerplaybowlers$EconRate ,rating_cluster_powerplaybowlers$StrikeRate, rating_cluster_powerplaybowlers$average, rating_cluster_powerplaybowlers$Dotballpercentage, decreasing = FALSE), ]
+rating_cluster_powerplaybowlers<-data.frame(rating_cluster_powerplaybowlers ,c(1:5))
+colnames(rating_cluster_powerplaybowlers)[6] <- "ProfileClusterNumber1"
+rating_cluster_powerplaybowlers <- subset(rating_cluster_powerplaybowlers, select = c("cluster_name", "ProfileClusterNumber1"))
+
+PowerPlayBowlersCluster <- left_join(PowerPlayBowlersCluster, rating_cluster_powerplaybowlers)
+
+PowerPlayBowlersCluster$ProfileClusterNumber1 <- ifelse(PowerPlayBowlersCluster$EconRate > 9 & PowerPlayBowlersCluster$EconRate != 5, 5, PowerPlayBowlersCluster$ProfileClusterNumber1)
+
+
+
+PowerPlayBowlersCluster$classification <- "Average"
+PowerPlayBowlersCluster$classification <- ifelse(PowerPlayBowlersCluster$ProfileClusterNumber1 == 5, "Tier 5", PowerPlayBowlersCluster$classification)
+PowerPlayBowlersCluster$classification <- ifelse(PowerPlayBowlersCluster$ProfileClusterNumber1== 4, "Tier 4", PowerPlayBowlersCluster$classification)
+PowerPlayBowlersCluster$classification <- ifelse(PowerPlayBowlersCluster$ProfileClusterNumber1== 3, "Tier 3", PowerPlayBowlersCluster$classification)
+PowerPlayBowlersCluster$classification <- ifelse(PowerPlayBowlersCluster$ProfileClusterNumber1 == 2, "Tier 2", PowerPlayBowlersCluster$classification)
+PowerPlayBowlersCluster$classification <- ifelse(PowerPlayBowlersCluster$ProfileClusterNumber1 == 1, "Tier 1", PowerPlayBowlersCluster$classification)
+
+
+
+y <- write.csv(PowerPlayBowlersCluster, "PowerPlayBowlersCluster.csv")
+
+#####################################################################################################################################################################
+
+
+EarlyMiddleOversPhase <- BBB %>% dplyr:: filter(InningsBalls > 36 & InningsBalls <= 66 )
+
+lastplayed <- EarlyMiddleOversPhase %>% dplyr:: group_by(player) %>% dplyr:: filter(StartDate == max(StartDate))
+lastplayed <-lastplayed %>% dplyr:: select(player, StartDate)
+colnames(lastplayed)[2] <- "LastPlayed"
+EarlyMiddleOversPhase <- left_join(EarlyMiddleOversPhase, lastplayed)
+EarlyMiddleOversPhase <- EarlyMiddleOversPhase %>% distinct()
+EarlyMiddleOversPhase <- EarlyMiddleOversPhase %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+
+
+
+
+
+
+
+
+BowlerBalls <- EarlyMiddleOversPhase %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(player)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(player) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Players
+
+BowlerStats <- BowlerBalls
+BowlerStats <- BowlerStats %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- EarlyMiddleOversPhase %>% dplyr:: group_by(MatchID, player) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats <- subset(BowlerStats , select = c("player", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats)[1]<- "player"
+BowlerStats <- BowlerStats %>% dplyr::: group_by(player) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats <- BowlerStats %>% distinct()
+
+# average and low ball filtering
+EarlyMiddleOversBowlerStats <- BowlerStats %>% dplyr:: filter(BowlerBallsBowled > 150)
+EarlyMiddleOversBowlerStats <-  EarlyMiddleOversBowlerStats %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+EarlyMiddleOversBowlerStats <- EarlyMiddleOversBowlerStats %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+EarlyMiddleOversdotballs <- EarlyMiddleOversPhase %>% dplyr:: filter(ScoreValue == 0)
+EarlyMiddleOversdotballs <- EarlyMiddleOversdotballs %>% distinct()
+EarlyMiddleOversdotballs <- EarlyMiddleOversdotballs %>% dplyr:: group_by(MatchID, player) %>% dplyr:: count(player)
+EarlyMiddleOversdotballs <- EarlyMiddleOversdotballs %>% dplyr:: group_by(player) %>% dplyr:: summarise(dotballs = sum(n))
+EarlyMiddleOversBowlerStats <- left_join(EarlyMiddleOversBowlerStats, EarlyMiddleOversdotballs)
+EarlyMiddleOversBowlerStats <- EarlyMiddleOversBowlerStats %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+EarlyMiddleOversBowlerStats <- EarlyMiddleOversBowlerStats %>% dplyr:: mutate(StrikeRate = BowlerBallsBowled/BowlerWicketsTaken)
+
+Bowlercluster2 <- subset(EarlyMiddleOversBowlerStats, select = c("BowlingAvg", "EconRate", "Dotballpercentage", "StrikeRate"))
+ScaledBowlerCluster2 <- Bowlercluster2 %>% scale()
+ScaledBowlerCluster2 <- as.data.frame(ScaledBowlerCluster2)
+ScaledBowlerCluster2$BowlingAvg <- ScaledBowlerCluster2$BowlingAvg*0.3
+ScaledBowlerCluster2$EconRate <- ScaledBowlerCluster2$BowlingAvg*0.3
+ScaledBowlerCluster2$Dotballpercentage <- ScaledBowlerCluster2$Dotballpercentage*0.1
+ScaledBowlerCluster2$StrikeRate <- ScaledBowlerCluster2$StrikeRate*0.3
+
+EarlyMiddleOversBowlersCluster <- kmeans(ScaledBowlerCluster2, 5)
+EarlyMiddleOversBowlersCluster <- data.frame(EarlyMiddleOversBowlerStats$player, EarlyMiddleOversBowlerStats$EconRate, EarlyMiddleOversBowlerStats$Dotballpercentage, EarlyMiddleOversBowlerStats$BowlingAvg, EarlyMiddleOversBowlerStats$StrikeRate, EarlyMiddleOversBowlersCluster$cluster)
+colnames(EarlyMiddleOversBowlersCluster)<- c("player", "EconRate", "Dotballpercentage", "average", "StrikeRate", "cluster_name" )
+
+rating_cluster_earlymiddleoversbowlers <- EarlyMiddleOversBowlersCluster %>% dplyr:: select(-player)
+rating_cluster_earlymiddleoversbowlers<- rating_cluster_earlymiddleoversbowlers %>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_earlymiddleoversbowlers<-rating_cluster_earlymiddleoversbowlers[order(rating_cluster_earlymiddleoversbowlers$EconRate ,rating_cluster_earlymiddleoversbowlers$StrikeRate, rating_cluster_earlymiddleoversbowlers$average, rating_cluster_earlymiddleoversbowlers$Dotballpercentage, decreasing = FALSE), ]
+rating_cluster_earlymiddleoversbowlers<-data.frame(rating_cluster_earlymiddleoversbowlers ,c(1:5))
+colnames(rating_cluster_earlymiddleoversbowlers)[6] <- "ProfileClusterNumber2"
+rating_cluster_earlymiddleoversbowlers <- subset(rating_cluster_earlymiddleoversbowlers, select = c("cluster_name", "ProfileClusterNumber2"))
+
+EarlyMiddleOversBowlersCluster <- left_join(EarlyMiddleOversBowlersCluster, rating_cluster_earlymiddleoversbowlers)
+
+EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 <- ifelse(EarlyMiddleOversBowlersCluster$EconRate > 9 & EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 != 5, 5, EarlyMiddleOversBowlersCluster$ProfileClusterNumber2)
+EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 <- ifelse(EarlyMiddleOversBowlersCluster$EconRate < 7.5 & EarlyMiddleOversBowlersCluster$StrikeRate < 50 & EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 != 2 & EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 != 1, 1, EarlyMiddleOversBowlersCluster$ProfileClusterNumber2)
+
+
+
+EarlyMiddleOversBowlersCluster$classification <- "Average"
+EarlyMiddleOversBowlersCluster$classification <- ifelse(EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 == 5, "Tier 5", EarlyMiddleOversBowlersCluster$classification)
+EarlyMiddleOversBowlersCluster$classification <- ifelse(EarlyMiddleOversBowlersCluster$ProfileClusterNumber2== 4, "Tier 4", EarlyMiddleOversBowlersCluster$classification)
+EarlyMiddleOversBowlersCluster$classification <- ifelse(EarlyMiddleOversBowlersCluster$ProfileClusterNumber2== 3, "Tier 3", EarlyMiddleOversBowlersCluster$classification)
+EarlyMiddleOversBowlersCluster$classification <- ifelse(EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 == 2, "Tier 2", EarlyMiddleOversBowlersCluster$classification)
+EarlyMiddleOversBowlersCluster$classification <- ifelse(EarlyMiddleOversBowlersCluster$ProfileClusterNumber2 == 1, "Tier 1", EarlyMiddleOversBowlersCluster$classification)
+
+m <- write.csv(EarlyMiddleOversBowlersCluster, "7to11BowlersCluster.csv")
+
+
+##############################################################################################################################################################################################################################################################
+
+
+lateMiddleOversPhase <- BBB %>% dplyr:: filter(InningsBalls > 66 & InningsBalls <= 96 )
+
+lastplayed <- lateMiddleOversPhase %>% dplyr:: group_by(player) %>% dplyr:: filter(StartDate == max(StartDate))
+lastplayed <-lastplayed %>% dplyr:: select(player, StartDate)
+colnames(lastplayed)[2] <- "LastPlayed"
+lateMiddleOversPhase <- left_join(lateMiddleOversPhase, lastplayed)
+lateMiddleOversPhase <- lateMiddleOversPhase %>% distinct()
+lateMiddleOversPhase <- lateMiddleOversPhase %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+
+
+
+
+
+
+
+
+BowlerBalls <- lateMiddleOversPhase %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(player)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(player) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Players
+
+BowlerStats <- BowlerBalls
+BowlerStats <- BowlerStats %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- lateMiddleOversPhase %>% dplyr:: group_by(MatchID, player) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats <- subset(BowlerStats , select = c("player", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats)[1]<- "player"
+BowlerStats <- BowlerStats %>% dplyr::: group_by(player) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats <- BowlerStats %>% distinct()
+
+# average and low ball filtering
+LateMiddleOversBowlerStats <- BowlerStats %>% dplyr:: filter(BowlerBallsBowled > 150)
+LateMiddleOversBowlerStats <-  LateMiddleOversBowlerStats %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+LateMiddleOversBowlerStats <- LateMiddleOversBowlerStats %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+LateMiddleoverDotballs <- lateMiddleOversPhase %>% dplyr:: filter(ScoreValue == 0)
+LateMiddleoverDotballs <- LateMiddleoverDotballs %>% distinct()
+LateMiddleoverDotballs <- LateMiddleoverDotballs %>% dplyr:: group_by(MatchID, player) %>% dplyr:: count(player)
+LateMiddleoverDotballs <- LateMiddleoverDotballs %>% dplyr:: group_by(player) %>% dplyr:: summarise(dotballs = sum(n))
+LateMiddleOversBowlerStats <- left_join(LateMiddleOversBowlerStats, LateMiddleoverDotballs)
+LateMiddleOversBowlerStats <- LateMiddleOversBowlerStats %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+LateMiddleOversBowlerStats <- LateMiddleOversBowlerStats %>% dplyr:: mutate(StrikeRate = BowlerBallsBowled/BowlerWicketsTaken)
+
+Bowlercluster3 <- subset(LateMiddleOversBowlerStats, select = c("BowlingAvg", "EconRate", "Dotballpercentage", "StrikeRate"))
+ScaledBowlerCluster3 <- Bowlercluster3 %>% scale()
+ScaledBowlerCluster3 <- as.data.frame(ScaledBowlerCluster3)
+ScaledBowlerCluster3$BowlingAvg <- ScaledBowlerCluster3$BowlingAvg*0.3
+ScaledBowlerCluster3$EconRate <- ScaledBowlerCluster3$BowlingAvg*0.3
+ScaledBowlerCluster3$Dotballpercentage <- ScaledBowlerCluster3$Dotballpercentage*0.1
+ScaledBowlerCluster3$StrikeRate <- ScaledBowlerCluster3$StrikeRate*0.3
+
+LateMiddleOversBowlersCluster <- kmeans(ScaledBowlerCluster3, 5)
+LateMiddleOversBowlersCluster <- data.frame(LateMiddleOversBowlerStats$player, LateMiddleOversBowlerStats$EconRate, LateMiddleOversBowlerStats$Dotballpercentage, LateMiddleOversBowlerStats$BowlingAvg, LateMiddleOversBowlerStats$StrikeRate, LateMiddleOversBowlersCluster$cluster)
+colnames(LateMiddleOversBowlersCluster)<- c("player", "EconRate", "Dotballpercentage", "average", "StrikeRate", "cluster_name" )
+
+rating_cluster_latemiddleoversbowlers <- LateMiddleOversBowlersCluster %>% dplyr:: select(-player)
+rating_cluster_latemiddleoversbowlers<- rating_cluster_latemiddleoversbowlers %>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_layemiddleoversbowlers<-rating_cluster_latemiddleoversbowlers[order(rating_cluster_latemiddleoversbowlers$EconRate ,rating_cluster_latemiddleoversbowlers$StrikeRate, rating_cluster_latemiddleoversbowlers$average, rating_cluster_latemiddleoversbowlers$Dotballpercentage, decreasing = FALSE), ]
+rating_cluster_latemiddleoversbowlers<-data.frame(rating_cluster_latemiddleoversbowlers ,c(1:5))
+colnames(rating_cluster_latemiddleoversbowlers)[6] <- "ProfileClusterNumber3"
+rating_cluster_latemiddleoversbowlers <- subset(rating_cluster_latemiddleoversbowlers, select = c("cluster_name", "ProfileClusterNumber3"))
+
+LateMiddleOversBowlersCluster <- left_join(LateMiddleOversBowlersCluster, rating_cluster_latemiddleoversbowlers)
+
+LateMiddleOversBowlersCluster$ProfileClusterNumber3 <- ifelse(LateMiddleOversBowlersCluster$EconRate > 9 & LateMiddleOversBowlersCluster$ProfileClusterNumber3 != 5, 5, LateMiddleOversBowlersCluster$ProfileClusterNumber3)
+LateMiddleOversBowlersCluster$ProfileClusterNumber3 <- ifelse(LateMiddleOversBowlersCluster$EconRate < 7.5 & LateMiddleOversBowlersCluster$StrikeRate < 40 & LateMiddleOversBowlersCluster$ProfileClusterNumber3 != 2 & LateMiddleOversBowlersCluster$ProfileClusterNumber3 != 1, 1, LateMiddleOversBowlersCluster$ProfileClusterNumber3)
+
+
+
+LateMiddleOversBowlersCluster$classification <- "Average"
+LateMiddleOversBowlersCluster$classification <- ifelse(LateMiddleOversBowlersCluster$ProfileClusterNumber3 == 5, "Tier 5", LateMiddleOversBowlersCluster$classification)
+LateMiddleOversBowlersCluster$classification <- ifelse(LateMiddleOversBowlersCluster$ProfileClusterNumber3== 4, "Tier 4", LateMiddleOversBowlersCluster$classification)
+LateMiddleOversBowlersCluster$classification <- ifelse(LateMiddleOversBowlersCluster$ProfileClusterNumber3== 3, "Tier 3", LateMiddleOversBowlersCluster$classification)
+LateMiddleOversBowlersCluster$classification <- ifelse(LateMiddleOversBowlersCluster$ProfileClusterNumber3 == 2, "Tier 2", LateMiddleOversBowlersCluster$classification)
+LateMiddleOversBowlersCluster$classification <- ifelse(LateMiddleOversBowlersCluster$ProfileClusterNumber3 == 1, "Tier 1", LateMiddleOversBowlersCluster$classification)
+
+m <- write.csv(LateMiddleOversBowlersCluster, "12to16BowlersCluster.csv")
+
+
+##############################################################################################################################################################################
+
+
+
+
+
+deathoverphase <- BBB %>% dplyr:: filter(InningsBalls > 96 & InningsBalls <= 120 )
+
+lastplayed <- deathoverphase %>% dplyr:: group_by(player) %>% dplyr:: filter(StartDate == max(StartDate))
+lastplayed <-lastplayed %>% dplyr:: select(player, StartDate)
+colnames(lastplayed)[2] <- "LastPlayed"
+deathoverphase <- left_join(deathoverphase, lastplayed)
+deathoverphase <- deathoverphase %>% distinct()
+deathoverphase <- deathoverphase %>% dplyr:: filter(LastPlayed > as.Date("2021-01-01"))
+
+
+
+
+
+
+
+
+
+
+
+BowlerBalls <- deathoverphase %>% dplyr:: group_by(MatchID ,BowlerID) %>% dplyr:: count(player)
+BowlerBalls <- BowlerBalls %>% dplyr:: group_by(player) %>% dplyr:: summarise(BowlerBallsBowled = sum(n))
+
+#Players
+
+BowlerStats <- BowlerBalls
+BowlerStats <- BowlerStats %>% distinct()
+
+
+#Bowler Wickets Taken and runs conceded 
+
+
+BowlerWickets <- deathoverphase %>% dplyr:: group_by(MatchID, player) %>% dplyr:: summarise(BowlerWicketsTaken = max(BowlerWickets), BowlerRunsConceded = sum(ScoreValue))
+BowlerStats <- left_join(BowlerBalls, BowlerWickets)          
+BowlerStats <- subset(BowlerStats , select = c("player", "BowlerWicketsTaken", "BowlerRunsConceded", "BowlerBallsBowled"))
+colnames(BowlerStats)[1]<- "player"
+BowlerStats <- BowlerStats %>% dplyr::: group_by(player) %>% dplyr:: summarise(BowlerWicketsTaken = sum(BowlerWicketsTaken), BowlerRunsConceded = sum(BowlerRunsConceded), BowlerBallsBowled)
+BowlerStats <- BowlerStats %>% distinct()
+
+# average and low ball filtering
+DeathoverBowlerStats <- BowlerStats %>% dplyr:: filter(BowlerBallsBowled > 150)
+DeathoverBowlerStats <-  DeathoverBowlerStats %>% dplyr:: mutate(BowlingAvg = BowlerRunsConceded/BowlerWicketsTaken)
+
+#econ
+DeathoverBowlerStats <- DeathoverBowlerStats %>% dplyr:: mutate(EconRate = (BowlerRunsConceded/BowlerBallsBowled)*6)
+
+#dot balls
+DeathoverDotballs <- deathoverphase %>% dplyr:: filter(ScoreValue == 0)
+DeathoverDotballs <- DeathoverDotballs %>% distinct()
+DeathoverDotballs <- DeathoverDotballs %>% dplyr:: group_by(MatchID, player) %>% dplyr:: count(player)
+DeathoverDotballs <- DeathoverDotballs %>% dplyr:: group_by(player) %>% dplyr:: summarise(dotballs = sum(n))
+DeathoverBowlerStats <- left_join(DeathoverBowlerStats, DeathoverDotballs)
+DeathoverBowlerStats <- DeathoverBowlerStats %>% dplyr:: mutate(Dotballpercentage = (dotballs/BowlerBallsBowled))
+
+
+#strikerate
+DeathoverBowlerStats <- DeathoverBowlerStats %>% dplyr:: mutate(StrikeRate = BowlerBallsBowled/BowlerWicketsTaken)
+DeathoverBowlerStats <- na.omit(DeathoverBowlerStats)
+
+BowlerCluster4 <- subset(DeathoverBowlerStats, select = c("BowlingAvg", "EconRate", "Dotballpercentage", "StrikeRate"))
+ScaledBowlerCluster4 <- BowlerCluster4 %>% scale()
+ScaledBowlerCluster4 <- as.data.frame(ScaledBowlerCluster4)
+ScaledBowlerCluster4$BowlingAvg <- ScaledBowlerCluster4$BowlingAvg*0.3
+ScaledBowlerCluster4$EconRate <- ScaledBowlerCluster4$BowlingAvg*0.3
+ScaledBowlerCluster4$Dotballpercentage <- ScaledBowlerCluster4$Dotballpercentage*0.1
+ScaledBowlerCluster4$StrikeRate <- ScaledBowlerCluster4$StrikeRate*0.3
+
+ScaledBowlerCluster4 <- na.omit(ScaledBowlerCluster4)
+
+set.seed(123)
+DeathOversBowlersCluster <- kmeans(ScaledBowlerCluster4, 5)
+DeathOversBowlersCluster <- data.frame(DeathoverBowlerStats$player, DeathoverBowlerStats$EconRate, DeathoverBowlerStats$Dotballpercentage, DeathoverBowlerStats$BowlingAvg, DeathoverBowlerStats$StrikeRate, DeathOversBowlersCluster$cluster)
+colnames(DeathOversBowlersCluster)<- c("player", "EconRate", "Dotballpercentage", "average", "StrikeRate", "cluster_name" )
+
+rating_cluster_deathoverbowlers <- DeathOversBowlersCluster %>% dplyr:: select(-player)
+rating_cluster_deathoverbowlers<- rating_cluster_deathoverbowlers %>% group_by(cluster_name) %>% summarise_each(mean)
+rating_cluster_layemiddleoversbowlers<-rating_cluster_deathoverbowlers[order(rating_cluster_deathoverbowlers$EconRate ,rating_cluster_deathoverbowlers$StrikeRate, rating_cluster_deathoverbowlers$average, rating_cluster_deathoverbowlers$Dotballpercentage, decreasing = FALSE), ]
+rating_cluster_deathoverbowlers<-data.frame(rating_cluster_deathoverbowlers ,c(1:5))
+colnames(rating_cluster_deathoverbowlers)[6] <- "ProfileClusterNumber4"
+rating_cluster_deathoverbowlers <- subset(rating_cluster_deathoverbowlers, select = c("cluster_name", "ProfileClusterNumber4"))
+
+DeathOversBowlersCluster <- left_join(DeathOversBowlersCluster, rating_cluster_deathoverbowlers)
+
+
+
+
+DeathOversBowlersCluster$classification <- "Average"
+DeathOversBowlersCluster$classification <- ifelse(DeathOversBowlersCluster$ProfileClusterNumber4 == 5, "Tier 3", DeathOversBowlersCluster$classification)
+DeathOversBowlersCluster$classification <- ifelse(DeathOversBowlersCluster$ProfileClusterNumber4== 4, "Tier 5", DeathOversBowlersCluster$classification)
+DeathOversBowlersCluster$classification <- ifelse(DeathOversBowlersCluster$ProfileClusterNumber4== 3, "Tier 2", DeathOversBowlersCluster$classification)
+DeathOversBowlersCluster$classification <- ifelse(DeathOversBowlersCluster$ProfileClusterNumber4 == 2, "Tier 1", DeathOversBowlersCluster$classification)
+DeathOversBowlersCluster$classification <- ifelse(DeathOversBowlersCluster$ProfileClusterNumber4 == 1, "Tier 4", DeathOversBowlersCluster$classification)
+
+m <- write.csv(DeathOversBowlersCluster, "DeathBowlersCluster.csv")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
