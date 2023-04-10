@@ -1,0 +1,4758 @@
+setwd("C:/Users/aashu/Downloads/Test Cricsheet Files")
+# Packages/Library
+library(readr)
+library(dplyr)
+library(plyr)
+library(class)
+library("DMwR")
+library(tidyverse)
+library(caret)
+library(glmnet)
+library(ggplot2)
+library(ISLR)    
+library(knitr)   
+library(tree)    
+library(rpart) 
+library("rpart.plot")
+library("randomForest")
+library(gbm)
+library("leaps")
+library(e1071)
+library("ROCR")
+library("missForest")
+library(mice)
+library("VIM")
+library("pROC")
+library("tree")
+library(jsonlite)
+library(dplyr)
+library(tidyr)
+library(rvest)
+library(stringr)
+library(lubridate)
+library(RODBC)
+library(stringdist)
+library(RPostgreSQL)
+library("xlsx")
+library("readxl")
+library(markovchain)
+library(reticulate)
+library(Rfast)
+
+
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+
+# BallByBall Table:
+BallByBallTable        <- dbGetQuery(conn, 'select * from "BallByBall"') %>% dplyr::select(-row.names)%>% distinct()
+CGame        <- dbGetQuery(conn, 'select * from "Game"') %>% dplyr::select(-row.names)%>% distinct()
+
+# Player Table:
+CPlayerTable      <- dbGetQuery(conn, "select * from cricketdb.player") %>% distinct()
+colnames(CPlayerTable)<-c("BowlerID","Bowler")
+#CPlayerTable<-CPlayerTable %>% filter(playerid!=1137283)
+# Adding Bowlers and Bastman:
+#CPlayerTable<-CPlayerTable %>% select(playerid,player)
+colnames(CPlayerTable)<-c("Bowler","BowlerID")
+CPlayerTable$BowlerID<-as.double(CPlayerTable$BowlerID)
+CPlayerTable <- CPlayerTable %>% dplyr:: filter(BowlerID != "497786")
+BallByBallTable<-BallByBallTable %>% distinct()
+BallByBallTable<-left_join(BallByBallTable,CPlayerTable)
+
+colnames(CPlayerTable)<-c("Batsman","BatsmanID")
+CPlayerTable$BatsmanID<-as.double(CPlayerTable$BatsmanID)
+BallByBallTable<-left_join(BallByBallTable,CPlayerTable)
+
+# Editing the Ball By Ball Dataset:
+# BallByBallTable$ShortText <- sub(".*,", "", BallByBallTable$ShortText)
+BallByBallTable<-BallByBallTable %>% dplyr::select(MatchID,Dismissal,PlayTypeID,SequenceID,ScoreValue,InningsNumber,Innings,InningsRuns,InningsRunRate,InningsRemainingBalls,InningsWickets,InningsFallOfWickets,InningsRequiredRunRate,InningsTarget,InningsRemainingRuns,Innings,BattingTeamID,BatsmanID,Batsman,BatsmanTotalRuns,BatsmanFaced,BatsmanFours,BatsmanSixes,BowlingTeamID,BowlerID,Bowler,BowlerBalls,BowlerWickets,BowlerOver,BowlerConceded)
+# BallByBallTable<-BallByBallTable[!grepl("6 runs|3 runs|7 runs|6 leg byes|5 runs|4 runs|6 no balls|6 no ball|5 no balls|5 no ball|5 leg byes|5 Wides|4 runs|4 no balls|4 no ball|3 no ball|3 no balls|2 no balls|1 no ball", BallByBallTable$ShortText),]
+BallByBallTable$ScoreValue<-as.double(BallByBallTable$ScoreValue)
+BallByBallTable<-BallByBallTable %>% dplyr::mutate(ScoreValue=if_else(Dismissal==TRUE,9,ScoreValue))
+
+BallByBallTable<-BallByBallTable[!(BallByBallTable$ScoreValue==7 |BallByBallTable$ScoreValue==5|BallByBallTable$ScoreValue==8|BallByBallTable$ScoreValue==3),]
+
+# Order BallByBallTable:
+
+BallByBallTable<-BallByBallTable[order(BallByBallTable[,1], BallByBallTable[,4],BallByBallTable[,6] ),]
+
+# Adding Venues to the BallByBallTable:
+
+
+source("C:/Users/aashu/Downloads/Wicky R files/Nrl Csvs/Sport_Tech_Daily_Functions.R", echo=TRUE)
+venues<-cricket_venue_table()
+venues<-venues %>% dplyr::select(venue,venueid)
+colnames(venues)<-c("Venue","VenueID")
+game_table<-cricket_game_table(startseason = 2008)
+venue_match_id<-game_table %>% dplyr::select(MatchID,VenueID)
+BallByBallTable<-left_join(BallByBallTable,venue_match_id)
+BallByBallTable<-left_join(BallByBallTable,CGame)
+######################################################################################################################
+# GAME INPUTS:
+# MatchID:
+game_id<-"1269649"
+league_id<-"8048" # Change it what
+matchid<-paste0(game_id,league_id)
+# Teams:
+team_1<-c("Yashasvi Jaiswal", "Jos Buttler", "Sanju Samson", "Devdutt Padikkal", "Riyan Parag", "Shimron Hetmyer", "Ravichandran Ashwin", "Jason Holder", "Trent Boult", "Yuzvendra Chahal", "KM Asif")
+team_2<-c("Ruturaj Gaikwad", "Devon Conway", "Moeen Ali", "Ambati Rayudu", "Ben Stokes", "Ravindra Jadeja", "Shivam Dube", "MS Dhoni", "Mitchell Santner", "Deepak Chahar", "Rajvardhan Hangargekar")
+team_1_name<-"Rajasthan Royals"
+team_2_name<-"Punjab Kings"
+
+# Match Venue:
+venue<-venues$VenueID[venues$Venue=="Gaddafi Stadium"]
+
+# Automated Bowling Order:
+overs_balls<-seq(from=0, to=120, by= 6)
+recent_bbb<-BallByBallTable %>% filter(StartDate > as.Date("2018-12-31"))
+recent_bbb<-recent_bbb %>% filter(LeagueID == 8044| LeagueID == 8048 | LeagueID == 8623 | LeagueID == 8053 | LeagueID == 8679 | LeagueID == 8653 | BattingTeamID == 2 | BattingTeamID == 25 | BattingTeamID == 1 | BattingTeamID == 5 | BattingTeamID == 6 | BattingTeamID == 3 | BattingTeamID == 7 | BattingTeamID == 4 | BattingTeamID == 40)
+
+b1_data<-recent_bbb %>% filter(Bowler %in% team_2)
+b2_data<-recent_bbb %>% filter(Bowler %in% team_1)
+b1_data<-b1_data %>% filter(InningsRemainingBalls %in% overs_balls)
+b2_data<-b2_data %>% filter(InningsRemainingBalls %in% overs_balls)
+b1_data<-b1_data %>% select(Bowler,InningsRemainingBalls,MatchID,StartDate)
+b1_data<-b1_data %>% mutate(Over= 20 -(InningsRemainingBalls/6))
+b2_data<-b2_data %>% select(Bowler,InningsRemainingBalls,MatchID,StartDate)
+b2_data<-b2_data %>% mutate(Over= 20 -(InningsRemainingBalls/6))
+b1_data<-b1_data %>% dplyr::select(Bowler,Over)
+b2_data<-b2_data %>% dplyr::select(Bowler,Over)
+
+b1_data<-b1_data  %>%  group_by(Bowler,Over) %>% count()
+b2_data<-b2_data %>%  group_by(Bowler,Over) %>% count()
+
+b1_total<-b1_data %>% dplyr::select(Bowler,freq) %>% group_by(Bowler) %>% summarise_each(sum)
+b2_total<-b2_data %>% dplyr::select(Bowler,freq) %>% group_by(Bowler) %>% summarise_each(sum)
+
+colnames(b1_total)[2]<-"total_overs"
+colnames(b2_total)[2]<-"total_overs"
+
+b1_data<-left_join(b1_data,b1_total)
+b2_data<-left_join(b2_data,b2_total)
+
+# Proportion of Players:
+b1_data<- b1_data %>% mutate(prop=freq/total_overs)
+b2_data<- b2_data %>% mutate(prop=freq/total_overs)
+
+b1_over_player<-c()
+
+
+
+b1_data<-b1_data %>% dplyr::filter(Over>0)
+
+Bowler_data<- b1_data %>% dplyr::filter(Over==1) 
+player_value<- Rfast::nth(Bowler_data$prop,1, descending = T) 
+player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+b1_over_player[1]<-player_data$Bowler
+
+
+
+for (i in 2:20) {
+  Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+  player_value<- Rfast::nth(Bowler_data$prop,1, descending = T) 
+  player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+  b1_over_player[i]<-player_data$Bowler
+  
+  b1_data_player<-as.data.frame(b1_over_player)
+  b1_data_player<-na.omit(b1_data_player)
+  b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  
+  if(as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,2, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  
+  
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|as.numeric(b1_data_player$freq[b1_data_player==b1_over_player[i]])>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,3, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,4, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,5, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,6, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,7, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,8, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,9, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,10, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  if( as.character(b1_over_player[i])==as.character(b1_over_player[i-1])|b1_data_player$freq[b1_data_player==b1_over_player[i]]>4){
+    Bowler_data<- b1_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,11, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b1_over_player[i]<-player_data$Bowler
+    b1_data_player<-as.data.frame(b1_over_player)
+    b1_data_player<-na.omit(b1_data_player)
+    b1_data_player<-b1_data_player %>% group_by(b1_over_player) %>% count()
+  }
+  
+  
+}
+
+
+
+for (j in 1:20) {
+  b1_over_player[j]<-as.character(b1_over_player[j])
+  
+}
+
+b2_over_player<-c()
+
+
+
+b2_data<-b2_data %>% dplyr::filter(Over>0)
+
+Bowler_data<- b2_data %>% dplyr::filter(Over==1) 
+player_value<- Rfast::nth(Bowler_data$prop,1, descending = T) 
+player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+b2_over_player[1]<-player_data$Bowler
+
+
+
+for (i in 2:20) {
+  Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+  player_value<- Rfast::nth(Bowler_data$prop,1, descending = T) 
+  player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+  b2_over_player[i]<-player_data$Bowler
+  
+  b2_data_player<-as.data.frame(b2_over_player)
+  b2_data_player<-na.omit(b2_data_player)
+  b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  
+  if(as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,2, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  
+  
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|as.numeric(b2_data_player$freq[b2_data_player==b2_over_player[i]])>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,3, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,4, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,5, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,6, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,7, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,8, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,9, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,10, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  if( as.character(b2_over_player[i])==as.character(b2_over_player[i-1])|b2_data_player$freq[b2_data_player==b2_over_player[i]]>4){
+    Bowler_data<- b2_data %>% dplyr::filter(Over==i) 
+    player_value<- Rfast::nth(Bowler_data$prop,11, descending = T) 
+    player_data<-Bowler_data %>% dplyr::filter(prop==player_value) %>% dplyr::select(Bowler)
+    b2_over_player[i]<-player_data$Bowler
+    b2_data_player<-as.data.frame(b2_over_player)
+    b2_data_player<-na.omit(b2_data_player)
+    b2_data_player<-b2_data_player %>% group_by(b2_over_player) %>% count()
+  }
+  
+  
+}
+
+
+
+for (j in 1:20) {
+  b2_over_player[j]<-as.character(b2_over_player[j])
+  
+}
+
+
+# Bowling Order:
+bowling_order<-c("Trent Boult", "KM Asif", "Trent Boult", "KM Asif", "Jason Holder", "Ravichandran Ashwin", "Yuzvendra Chahal", "Ravichandran Ashwin", "Jason Holder", "Yuzvendra Chahal", "Jason Holder", "Yuzvendra Chahal", "Trent Boult", "Ravichandran Ashwin", "Jason Holder", "KM Asif", "Ravichandran Ashwin", "KM Asif", "Trent Boult", "Yuzvendra Chahal" )
+bowling_order
+
+
+
+
+
+
+bowling_order_2<-c("Arshdeep Singh", "Kagiso Rabada", "Arshdeep Singh", "Kagiso Rabada", "Sam Curran", "Rahul Chahar", "Sikandar Raza", "Rahul Chahar", "Sam Curran", "Sikandar Raza", "Sam Curran", "Sikandar Raza", "Arshdeep Singh", "Rahul Chahar", "Sam Curran", "Kagiso Rabada", "Rahul Chahar", "Kagiso Rabada", "Arshdeep Singh", "Sikandar Raza")
+
+bowling_order_2
+
+###################################################################################################################################################################################################################################################################################################################################################################################
+
+
+## Markv Chain Simulation Engine- Over By Over ##:
+print("Start")
+innings_1_data<-BallByBallTable %>% dplyr::filter(Innings==1)
+
+# Setting Intitial Condition of wicket
+w<-0
+b<-1
+b_current<-0
+
+# Simulating for First Six Overs
+
+batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[1])
+#batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[2])
+#batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+
+bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+#bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+venue_bbb<-venue_data
+#venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+
+# Weightings for the Data:
+weight_venue<-0.1
+weight_bat<-0.6
+weight_bowl<-0.3
+
+# ScoreValue Data:
+batsman_1_data<-batsman_1_data$ScoreValue
+batsman_1_data<-as.character(batsman_1_data)
+
+batsman_2_data<-batsman_2_data$ScoreValue
+batsman_2_data<-as.character(batsman_2_data)
+
+bowler_data<-bowler_data$ScoreValue
+bowler_data<-as.character(bowler_data)
+
+venue_data<-venue_data$ScoreValue
+venue_data<-as.character(venue_data)
+
+# Transition Matrix:
+mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+
+# Weighted Batsman Transition Matrix:
+batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+
+rowSums(batsman_1)
+rowSums(batsman_2)
+
+if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+  new_batsman_1_data<-new_batsman_1_data[1:1000,]
+  batsman_1_data<-new_batsman_1_data$ScoreValue
+  
+  new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_1<-new_batsman_1@transitionMatrix
+  
+  for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+    
+    batsman_1[o,]<-new_batsman_1[o,]
+    
+  }
+}
+
+if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+  new_batsman_2_data<-new_batsman_2_data[1:1000,]
+  batsman_2_data<-new_batsman_2_data$ScoreValue
+  new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_2<-new_batsman_2
+  
+  for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+    
+    batsman_2[o,]<-new_batsman_2[o,]
+    
+  }
+}
+
+
+# Simulate over:
+b_current<-as.numeric(markovchainSequence(
+  1,
+  new("markovchain", transitionMatrix = batsman_1),
+  t0 = 0,
+  include.t0 = FALSE,
+  useRCpp = TRUE
+))
+
+b_current
+over_data<-c()
+over_data<-as.data.frame(over_data)
+simulation<-c()
+over_data[1,]<-b_current
+over_data[,1]<-b_current
+
+over_data<-data.frame(over_data,team_1[1],bowling_order[1])
+colnames(over_data)<-c("Simulation","Batsman","Bowler")
+
+# Initial Conditions:- For Adding Batsman:
+on_strike = 1
+off_strike = 2
+next_player = 3
+w=0
+b=1
+print("First Ball")
+for (i in 2:6){
+  print("First Over")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+    # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+    # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+    # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+    # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+    }
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE))
+    
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_1[on_strike]
+    over_data[i,3]<-bowling_order[1]
+  }else if (b_current %% 2 ==0){
+    b=b+1
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_1[on_strike]
+    over_data[i,3]<-bowling_order[1]
+    
+  }else{
+    b=b+1
+    k=on_strike
+    y=off_strike
+    on_strike=y
+    off_strike=k
+    m<-batsman_1
+    n<-batsman_2
+    batsman_1<-n
+    batsman_2<-m
+    
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_1[on_strike]
+    over_data[i,3]<-bowling_order[1]
+  }
+}
+simulation<-over_data
+over_data
+j<-2
+
+
+
+while (j<=20 & w<=10 & on_strike<=11) {
+  print("Overs 2-20")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    # Simulating for First Six Overs
+    o<-on_strike
+    p<-off_strike
+    on_strike<-p
+    off_strike<-o
+    batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+    #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+    #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+    #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+    #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+    }
+    # Simulate over:
+    
+    b_current<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = 0,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    
+  }
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  i<-2
+  over_data<-data.frame(over_data,team_1[on_strike],bowling_order[j])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  while (i<=6 & w<=10 & on_strike<=11) {
+    if (b_current ==9 & next_player<= 11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[j]
+      i<-i+1
+      
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[j]
+      i<-i+1
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[j]
+      i<-i+1
+      
+    }
+    
+    
+    
+    
+  }
+  over_data
+  simulation<-rbind(simulation,over_data)
+  j<-j+1
+}
+
+
+
+
+
+# Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+# Phase By Phase Balls
+# Otherwise Works Well
+
+
+library(reticulate)
+
+source_python('format_simulation.py')
+x<-format_simulation(simulation$Simulation,team_1,bowling_order,team_1_name,team_2_name)
+x<-data.frame(x,1)
+colnames(x)[11]<-"Simulation Number"
+sim_data<-x
+
+sims<-simulation$Simulation
+sims<-data.frame(sims)
+
+for (game in 2:100) {
+  ## Markv Chain Simulation Engine- Over By Over ##:
+  print("Start")
+  print(game)
+  innings_1_data<-BallByBallTable %>% dplyr::filter(Innings==1)
+  
+  # Setting Intitial Condition of wicket
+  w<-0
+  b<-1
+  b_current<-0
+  
+  # Simulating for First Six Overs
+  
+  batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[1])
+  #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+  batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[2])
+  #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+  #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+  venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+  venue_bbb<-venue_data
+  #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  # Weightings for the Data:
+  weight_venue<-0.1
+  weight_bat<-0.6
+  weight_bowl<-0.3
+  
+  # ScoreValue Data:
+  batsman_1_data<-batsman_1_data$ScoreValue
+  batsman_1_data<-as.character(batsman_1_data)
+  
+  batsman_2_data<-batsman_2_data$ScoreValue
+  batsman_2_data<-as.character(batsman_2_data)
+  
+  bowler_data<-bowler_data$ScoreValue
+  bowler_data<-as.character(bowler_data)
+  
+  venue_data<-venue_data$ScoreValue
+  venue_data<-as.character(venue_data)
+  
+  # Transition Matrix:
+  mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  # Weighted Batsman Transition Matrix:
+  batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  
+  rowSums(batsman_1)
+  rowSums(batsman_2)
+  
+  if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+    new_batsman_1_data<-new_batsman_1_data[1:1000,]
+    batsman_1_data<-new_batsman_1_data$ScoreValue
+    
+    new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_1<-new_batsman_1@transitionMatrix
+    
+    for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+      
+      batsman_1[o,]<-new_batsman_1[o,]
+      
+    }
+  }
+  
+  if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+    new_batsman_2_data<-new_batsman_2_data[1:1000,]
+    batsman_2_data<-new_batsman_2_data$ScoreValue
+    new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_2<-new_batsman_2
+    
+    for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+      
+      batsman_2[o,]<-new_batsman_2[o,]
+      
+    }
+  }
+  
+  
+  # Simulate over:
+  b_current<-as.numeric(markovchainSequence(
+    1,
+    new("markovchain", transitionMatrix = batsman_1),
+    t0 = 0,
+    include.t0 = FALSE,
+    useRCpp = TRUE
+  ))
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  simulation<-c()
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  
+  over_data<-data.frame(over_data,team_1[1],bowling_order[1])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  # Initial Conditions:- For Adding Batsman:
+  on_strike = 1
+  off_strike = 2
+  next_player = 3
+  w=0
+  b=1
+  print("First Ball")
+  for (i in 2:6){
+    print("First Over")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      # Weightings for the Data:
+      b1_weight_venue<-0.1
+      b1_weight_bat<-0.6
+      b1_weight_bowl<-0.3
+      
+      
+      b2_weight_bat<-0.6
+      b2_weight_bowl<-0.3
+      b2_weight_venue<-0.1
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[1]
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[1]
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[1]
+    }
+  }
+  simulation<-over_data
+  over_data
+  j<-2
+  
+  
+  
+  while (j<=20 & w<=10 & on_strike<=11) {
+    print("Overs 2-20")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      # Simulating for First Six Overs
+      o<-on_strike
+      p<-off_strike
+      on_strike<-p
+      off_strike<-o
+      batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+      #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+      #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+      #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+      #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      # Simulate over:
+      
+      b_current<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = 0,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      
+    }
+    
+    b_current
+    over_data<-c()
+    over_data<-as.data.frame(over_data)
+    over_data[1,]<-b_current
+    over_data[,1]<-b_current
+    i<-2
+    over_data<-data.frame(over_data,team_1[on_strike],bowling_order[j])
+    colnames(over_data)<-c("Simulation","Batsman","Bowler")
+    
+    while (i<=6 & w<=10 & on_strike<=11) {
+      if (b_current ==9 & next_player<= 11){
+        b=b+1
+        w=w+1
+        on_strike=next_player
+        next_player=next_player+1
+        
+        batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+        # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+        batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+        # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+        bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+        # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+        venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+        # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+        
+        
+        
+        # ScoreValue Data:
+        batsman_1_data<-batsman_1_data$ScoreValue
+        batsman_1_data<-as.character(batsman_1_data)
+        
+        batsman_2_data<-batsman_2_data$ScoreValue
+        batsman_2_data<-as.character(batsman_2_data)
+        
+        bowler_data<-bowler_data$ScoreValue
+        bowler_data<-as.character(bowler_data)
+        
+        venue_data<-venue_data$ScoreValue
+        venue_data<-as.character(venue_data)
+        
+        # Transition Matrix:
+        mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        # Weighted Batsman Transition Matrix:
+        batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        
+        if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+          new_batsman_1_data<-new_batsman_1_data[1:1000,]
+          batsman_1_data<-new_batsman_1_data$ScoreValue
+          new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_1<-new_batsman_1
+          
+          for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+            
+            batsman_1[o,]<-new_batsman_1[o,]
+            
+          }
+        }
+        
+        if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+          new_batsman_2_data<-new_batsman_2_data[1:1000,]
+          batsman_2_data<-new_batsman_2_data$ScoreValue
+          new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_2<-new_batsman_2
+          
+          for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+            
+            batsman_2[o,]<-new_batsman_2[o,]
+            
+          }
+        }
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE))
+        
+        b_current<-b_next
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_1[on_strike]
+        over_data[i,3]<-bowling_order[j]
+        i<-i+1
+        
+      }else if (b_current %% 2 ==0){
+        b=b+1
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_1[on_strike]
+        over_data[i,3]<-bowling_order[j]
+        i<-i+1
+        
+      }else{
+        b=b+1
+        k=on_strike
+        y=off_strike
+        on_strike=y
+        off_strike=k
+        m<-batsman_1
+        n<-batsman_2
+        batsman_1<-n
+        batsman_2<-m
+        
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_1[on_strike]
+        over_data[i,3]<-bowling_order[j]
+        i<-i+1
+        
+      }
+      
+      
+      
+      
+    }
+    over_data
+    simulation<-rbind(simulation,over_data)
+    j<-j+1
+  }
+  
+  
+  
+  
+  
+  # Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+  # Phase By Phase Balls
+  # Otherwise Works Well
+  
+  
+  library(reticulate)
+  
+  source_python('format_simulation.py')
+  x<-format_simulation(simulation$Simulation,team_1,bowling_order,team_1_name,team_2_name)
+  x<-data.frame(x,game)
+  colnames(x)[11]<-"Simulation Number"
+  
+  sim_data<-rbind(sim_data,x)
+  
+  
+}
+sim_scores<-sim_data %>% dplyr::select(`Simulation Number`,batting_runs_scored,wickets_taken)
+
+sim_scores<-sim_scores %>% group_by(`Simulation Number`) %>% summarise_each(sum)
+
+hist(sim_scores$batting_runs_scored)
+mean(sim_scores$batting_runs_scored)
+hist(sim_scores$wickets_taken)
+mean(sim_scores$wickets_taken)
+
+batting<-sim_data %>% dplyr::select(-`Simulation Number`,-team_id) 
+batting<-batting %>% group_by(player_id)%>% filter(batting_position!=0) %>%  summarise_each(mean)
+bowling<-sim_data %>% dplyr::select(-`Simulation Number`,-team_id) 
+bowling<-bowling %>% group_by(player_id) %>%  summarise_each(mean) %>% filter(batting_position==0) %>% dplyr::select(player_id,balls_bowled_legal,wickets_taken,bowl_runs_conceded)
+
+##########################################################################################################################################################################################
+## SECOND INNINGS SIMULATION ##
+##########################################################################################################################################################################################
+### Second Innings Simulation Continue ###:---------------------------------------------------------------------------------
+first_innings_score<-median(sim_scores$batting_runs_scored)
+first_innings_score<-round(first_innings_score,digits = 0)
+
+
+team_scores<-cricket_team_stats_table(startseason = 2008)
+team_scores<-team_scores %>% dplyr::select(MatchID,TeamID,Innings1Runs)
+
+first_innings_data<-game_table %>% dplyr::select(MatchID,FirstBattingTeamID)
+colnames(first_innings_data)[2]<-"TeamID"
+
+data_innings<-merge(first_innings_data,team_scores)
+data_innings<-data_innings %>% distinct()
+data_innings<-data_innings %>% dplyr::select(MatchID,Innings1Runs)
+
+second_innings_data<-BallByBallTable %>% filter(Innings==2)
+second_innings_data<-left_join(second_innings_data,data_innings)
+
+# Filter Dataset Based on the Runs Scored:
+second_innings_data<-second_innings_data %>% filter(InningsTarget %in% seq(from=first_innings_score-30, to= first_innings_score + 30))
+
+
+## Markv Chain Simulation Engine- Over By Over ##:
+print("Start")
+
+# Setting Intitial Condition of wicket
+w<-0
+b<-1
+b_current<-0
+
+# Simulating for First Six Overs
+
+batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[1])
+#batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[2])
+#batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+
+bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+#bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+venue_bbb<-venue_data
+
+
+# ScoreValue Data:
+batsman_1_data<-batsman_1_data$ScoreValue
+batsman_1_data<-as.character(batsman_1_data)
+
+batsman_2_data<-batsman_2_data$ScoreValue
+batsman_2_data<-as.character(batsman_2_data)
+
+bowler_data<-bowler_data$ScoreValue
+bowler_data<-as.character(bowler_data)
+
+venue_data<-venue_data$ScoreValue
+venue_data<-as.character(venue_data)
+
+# Transition Matrix:
+mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+
+# Weighted Batsman Transition Matrix:
+batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+
+rowSums(batsman_1)
+rowSums(batsman_2)
+
+if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+  new_batsman_1_data<-new_batsman_1_data[1:1000,]
+  batsman_1_data<-new_batsman_1_data$ScoreValue
+  
+  new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_1<-new_batsman_1@transitionMatrix
+  
+  for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+    
+    batsman_1[o,]<-new_batsman_1[o,]
+    
+  }
+  for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+    
+    batsman_1<-batsman_1[-k,]
+    
+  }
+}
+
+if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+  new_batsman_2_data<-new_batsman_2_data[1:1000,]
+  batsman_2_data<-new_batsman_2_data$ScoreValue
+  new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_2<-new_batsman_2
+  
+  for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+    
+    batsman_2[o,]<-new_batsman_2[o,]
+    
+  }
+  for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+    
+    batsman_2<-batsman_2[-k,]
+    
+  }
+}
+
+
+# Simulate over:
+b_current<-as.numeric(markovchainSequence(
+  1,
+  new("markovchain", transitionMatrix = batsman_1),
+  t0 = 0,
+  include.t0 = FALSE,
+  useRCpp = TRUE
+))
+
+b_current
+over_data<-c()
+over_data<-as.data.frame(over_data)
+simulation<-c()
+over_data[1,]<-b_current
+over_data[,1]<-b_current
+
+over_data<-data.frame(over_data,team_2[1],bowling_order_2[1])
+colnames(over_data)<-c("Simulation","Batsman","Bowler")
+
+# Initial Conditions:- For Adding Batsman:
+on_strike = 1
+off_strike = 2
+next_player = 3
+w=0
+b=1
+print("First Ball")
+for (i in 2:6){
+  print("First Over")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+    # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+    # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+    # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+    # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1<-batsman_1[-k,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2<-batsman_2[-k,]
+        
+      }
+    }
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE))
+    
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_2[on_strike]
+    over_data[i,3]<-bowling_order_2[1]
+  }else if (b_current %% 2 ==0){
+    b=b+1
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_2[on_strike]
+    over_data[i,3]<-bowling_order_2[1]
+    
+  }else{
+    b=b+1
+    k=on_strike
+    y=off_strike
+    on_strike=y
+    off_strike=k
+    m<-batsman_1
+    n<-batsman_2
+    batsman_1<-n
+    batsman_2<-m
+    
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_2[on_strike]
+    over_data[i,3]<-bowling_order_2[1]
+  }
+}
+simulation<-over_data
+over_data
+j<-2
+
+
+
+while (j<=20 & w<=10 & on_strike<=11) {
+  print("Overs 2-20")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    # Simulating for First Six Overs
+    o<-on_strike
+    p<-off_strike
+    on_strike<-p
+    off_strike<-o
+    batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+    #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+    #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+    #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+    #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1<-batsman_1[-k,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2<-batsman_2[-k,]
+        
+      }
+    }
+    # Simulate over:
+    
+    b_current<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = 0,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    
+  }
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  i<-2
+  over_data<-data.frame(over_data,team_2[on_strike],bowling_order_2[j])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  while (i<=6 & w<=10 & on_strike<=11) {
+    if (b_current ==9 & next_player<= 11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+        for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1<-batsman_1[-k,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+        for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2<-batsman_2[-k,]
+          
+        }
+      }
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[j]
+      i<-i+1
+      
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[j]
+      i<-i+1
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[j]
+      i<-i+1
+      
+    }
+    
+    
+    
+    
+  }
+  over_data
+  simulation<-rbind(simulation,over_data)
+  j<-j+1
+}
+
+
+
+
+
+# Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+# Phase By Phase Balls
+# Otherwise Works Well
+
+
+library(reticulate)
+
+source_python('format_simulation.py')
+
+x<-format_simulation(simulation$Simulation,team_2,bowling_order_2,team_2_name,team_1_name)
+x<-data.frame(x,1)
+colnames(x)[11]<-"Simulation Number"
+sim_data_2<-x
+
+for (game in 2:100) {
+  ## Markv Chain Simulation Engine- Over By Over ##:
+  print("Start")
+  print(game)
+  
+  # Setting Intitial Condition of wicket
+  w<-0
+  b<-1
+  b_current<-0
+  
+  # Simulating for First Six Overs
+  
+  batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[1])
+  #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+  batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[2])
+  #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+  #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+  venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+  venue_bbb<-venue_data
+  #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  # Weightings for the Data:
+  weight_venue<-0.1
+  weight_bat<-0.6
+  weight_bowl<-0.3
+  
+  # ScoreValue Data:
+  batsman_1_data<-batsman_1_data$ScoreValue
+  batsman_1_data<-as.character(batsman_1_data)
+  
+  batsman_2_data<-batsman_2_data$ScoreValue
+  batsman_2_data<-as.character(batsman_2_data)
+  
+  bowler_data<-bowler_data$ScoreValue
+  bowler_data<-as.character(bowler_data)
+  
+  venue_data<-venue_data$ScoreValue
+  venue_data<-as.character(venue_data)
+  
+  # Transition Matrix:
+  mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  # Weighted Batsman Transition Matrix:
+  batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  
+  rowSums(batsman_1)
+  
+  if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+    new_batsman_1_data<-new_batsman_1_data[1:1000,]
+    batsman_1_data<-new_batsman_1_data$ScoreValue
+    new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_1<-new_batsman_1
+    
+    for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+      
+      batsman_1[o,]<-new_batsman_1[o,]
+      
+    }
+    
+  }
+  
+  if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+    new_batsman_2_data<-new_batsman_2_data[1:1000,]
+    batsman_2_data<-new_batsman_2_data$ScoreValue
+    new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_2<-new_batsman_2
+    
+    for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+      
+      batsman_2[o,]<-new_batsman_2[o,]
+      
+    }
+    
+  }
+  
+  batsman_1<-markovchainFit(batsman_1_data)$estimate
+  batsman_1<-batsman_1@transitionMatrix
+  
+  batsman_2<-markovchainFit(batsman_2_data)$estimate
+  batsman_2<-batsman_2@transitionMatrix
+  
+  # Simulate over:
+  b_current<-as.numeric(markovchainSequence(
+    1,
+    new("markovchain", transitionMatrix = batsman_1),
+    t0 = 0,
+    include.t0 = FALSE,
+    useRCpp = TRUE
+  ))
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  simulation<-c()
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  
+  over_data<-data.frame(over_data,team_2[1],bowling_order_2[1])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  # Initial Conditions:- For Adding Batsman:
+  on_strike = 1
+  off_strike = 2
+  next_player = 3
+  w=0
+  b=1
+  print("First Ball")
+  for (i in 2:6){
+    print("First Over")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      
+      batsman_1<-markovchainFit(batsman_1_data)$estimate
+      batsman_1<-batsman_1@transitionMatrix
+      
+      batsman_2<-markovchainFit(batsman_2_data)$estimate
+      batsman_2<-batsman_2@transitionMatrix
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[1]
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[1]
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[1]
+    }
+  }
+  simulation<-over_data
+  over_data
+  j<-2
+  
+  while (j<=20 & w<=10 & on_strike<=11) {
+    print("Overs 2-20")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      # Simulating for First Six Overs
+      o<-on_strike
+      p<-off_strike
+      on_strike<-p
+      off_strike<-o
+      batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+      #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+      #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+      #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+      #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      
+      batsman_1<-markovchainFit(batsman_1_data)$estimate
+      batsman_1<-batsman_1@transitionMatrix
+      
+      batsman_2<-markovchainFit(batsman_2_data)$estimate
+      batsman_2<-batsman_2@transitionMatrix
+      
+      # Simulate over:
+      
+      b_current<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = 0,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      
+    }
+    
+    b_current
+    over_data<-c()
+    over_data<-as.data.frame(over_data)
+    over_data[1,]<-b_current
+    over_data[,1]<-b_current
+    i<-2
+    over_data<-data.frame(over_data,team_2[on_strike],bowling_order_2[j])
+    colnames(over_data)<-c("Simulation","Batsman","Bowler")
+    
+    while (i<=6 & w<=10 & on_strike<=11) {
+      if (b_current ==9 & next_player<= 11){
+        b=b+1
+        w=w+1
+        on_strike=next_player
+        next_player=next_player+1
+        
+        batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+        # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+        batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+        # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+        bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+        # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+        venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+        # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+        
+        
+        
+        # ScoreValue Data:
+        batsman_1_data<-batsman_1_data$ScoreValue
+        batsman_1_data<-as.character(batsman_1_data)
+        
+        batsman_2_data<-batsman_2_data$ScoreValue
+        batsman_2_data<-as.character(batsman_2_data)
+        
+        bowler_data<-bowler_data$ScoreValue
+        bowler_data<-as.character(bowler_data)
+        
+        venue_data<-venue_data$ScoreValue
+        venue_data<-as.character(venue_data)
+        
+        # Transition Matrix:
+        mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        # Weighted Batsman Transition Matrix:
+        batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        
+        if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+          batsman_1_data<-new_batsman_1_data$ScoreValue
+          new_batsman_1_data<-new_batsman_1_data[1:1000,]
+          new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_1<-new_batsman_1
+          
+          for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+            
+            batsman_1[o,]<-new_batsman_1[o,]
+            
+          }
+        }
+        
+        if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+          new_batsman_2_data<-new_batsman_2_data[1:1000,]
+          batsman_2_data<-new_batsman_2_data$ScoreValue
+          new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_2<-new_batsman_2
+          
+          for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+            
+            batsman_2[o,]<-new_batsman_2[o,]
+            
+          }
+        }
+        
+        batsman_1<-markovchainFit(batsman_1_data)$estimate
+        batsman_1<-batsman_1@transitionMatrix
+        
+        batsman_2<-markovchainFit(batsman_2_data)$estimate
+        batsman_2<-batsman_2@transitionMatrix
+        
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE))
+        
+        b_current<-b_next
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_2[on_strike]
+        over_data[i,3]<-bowling_order_2[j]
+        i<-i+1
+        
+      }else if (b_current %% 2 ==0){
+        b=b+1
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_2[on_strike]
+        over_data[i,3]<-bowling_order_2[j]
+        i<-i+1
+        
+      }else{
+        b=b+1
+        k=on_strike
+        y=off_strike
+        on_strike=y
+        off_strike=k
+        m<-batsman_1
+        n<-batsman_2
+        batsman_1<-n
+        batsman_2<-m
+        
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_2[on_strike]
+        over_data[i,3]<-bowling_order_2[j]
+        i<-i+1
+        
+      }
+      
+      
+      
+      
+    }
+    over_data
+    simulation<-rbind(simulation,over_data)
+    j<-j+1
+  }
+  
+  # Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+  # Phase By Phase Balls
+  # Otherwise Works Well
+  
+  
+  library(reticulate)
+  
+  source_python('format_simulation.py')
+  
+  
+  x<-format_simulation(simulation$Simulation,team_2,bowling_order_2,team_2_name,team_1_name)
+  x<-data.frame(x,game)
+  colnames(x)[11]<-"Simulation Number"
+  sim_data_2<-rbind(sim_data_2,x)
+  
+  
+}
+
+
+
+
+
+sim_scores_2<-sim_data_2 %>% dplyr::select(`Simulation Number`,batting_runs_scored,wickets_taken)
+
+sim_scores_2<-sim_scores_2 %>% group_by(`Simulation Number`) %>% summarise_each(sum)
+
+hist(sim_scores_2$batting_runs_scored)
+mean(sim_scores_2$batting_runs_scored)
+hist(sim_scores_2$wickets_taken)
+mean(sim_scores_2$wickets_taken)
+
+batting_2<-sim_data_2 %>% dplyr::select(-`Simulation Number`,-team_id) 
+batting_2<-batting_2 %>% group_by(player_id)%>% filter(batting_position!=0) %>%  summarise_each(mean)
+bowling_2<-sim_data_2 %>% dplyr::select(-`Simulation Number`,-team_id) 
+bowling_2<-bowling_2 %>% group_by(player_id) %>%  summarise_each(mean) %>% filter(batting_position==0) %>% dplyr::select(player_id,balls_bowled_legal,wickets_taken,bowl_runs_conceded)
+
+########################################################################################################################################################################################
+## COMBINING FIRST AND SECOND INNINGS DATA TO GET TOTAL DATASET ##
+########################################################################################################################################################################################
+sim_data<-sim_data[,1:11]
+sim_data<-data.frame(sim_data,1,paste0(team_1_name," batting first"))
+colnames(sim_data)[12:13]<-c("Innings","team_batting_first")
+
+sim_data_2<-sim_data_2[,1:11]
+sim_data_2<-data.frame(sim_data_2,2,paste0(team_1_name," batting first"))
+colnames(sim_data_2)[12:13]<-c("Innings","team_batting_first")
+
+total_dataset_1<-rbind(sim_data,sim_data_2)
+total_dataset_1<-data.frame(total_dataset_1,paste0(team_1_name," vs ",team_2_name))
+colnames(total_dataset_1)[14]<-"Match"
+
+############################################################################################################################
+## Repeat Simulation for other team batting:
+############################################################################################################################
+## Changing Input Names:
+var_team1<-team_1
+var_team2<-team_2
+var_team1_name<-team_1_name
+var_team2_name<-team_2_name
+var_bowling_order<-bowling_order
+var_bowling_order_2<-bowling_order_2
+
+assign("team_1",var_team2)
+assign("team_2",var_team1)
+assign("team_1_name",var_team2_name)
+assign("team_2_name",var_team1_name)
+assign("bowling_order",var_bowling_order_2)
+assign("bowling_order_2",var_bowling_order)
+
+#############################################################################################################################
+
+##########################################################################################################################################################################################
+## Markv Chain Simulation Engine- Over By Over ##:
+print("Start")
+innings_1_data<-BallByBallTable %>% dplyr::filter(Innings==1)
+
+# Setting Intitial Condition of wicket
+w<-0
+b<-1
+b_current<-0
+
+# Simulating for First Six Overs
+
+batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[1])
+#batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[2])
+#batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+
+bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+#bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+venue_bbb<-venue_data
+#venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+
+# Weightings for the Data:
+weight_venue<-0.1
+weight_bat<-0.6
+weight_bowl<-0.3
+
+# ScoreValue Data:
+batsman_1_data<-batsman_1_data$ScoreValue
+batsman_1_data<-as.character(batsman_1_data)
+
+batsman_2_data<-batsman_2_data$ScoreValue
+batsman_2_data<-as.character(batsman_2_data)
+
+bowler_data<-bowler_data$ScoreValue
+bowler_data<-as.character(bowler_data)
+
+venue_data<-venue_data$ScoreValue
+venue_data<-as.character(venue_data)
+
+# Transition Matrix:
+mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+
+# Weighted Batsman Transition Matrix:
+batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+
+rowSums(batsman_1)
+rowSums(batsman_2)
+
+if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+  new_batsman_1_data<-new_batsman_1_data[1:1000,]
+  batsman_1_data<-new_batsman_1_data$ScoreValue
+  
+  new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_1<-new_batsman_1@transitionMatrix
+  
+  for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+    
+    batsman_1[o,]<-new_batsman_1[o,]
+    
+  }
+}
+
+if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+  new_batsman_2_data<-new_batsman_2_data[1:1000,]
+  batsman_2_data<-new_batsman_2_data$ScoreValue
+  new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_2<-new_batsman_2
+  
+  for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+    
+    batsman_2[o,]<-new_batsman_2[o,]
+    
+  }
+}
+
+
+# Simulate over:
+b_current<-as.numeric(markovchainSequence(
+  1,
+  new("markovchain", transitionMatrix = batsman_1),
+  t0 = 0,
+  include.t0 = FALSE,
+  useRCpp = TRUE
+))
+
+b_current
+over_data<-c()
+over_data<-as.data.frame(over_data)
+simulation<-c()
+over_data[1,]<-b_current
+over_data[,1]<-b_current
+
+over_data<-data.frame(over_data,team_1[1],bowling_order[1])
+colnames(over_data)<-c("Simulation","Batsman","Bowler")
+
+# Initial Conditions:- For Adding Batsman:
+on_strike = 1
+off_strike = 2
+next_player = 3
+w=0
+b=1
+print("First Ball")
+for (i in 2:6){
+  print("First Over")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+    # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+    # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+    # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+    # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+    }
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE))
+    
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_1[on_strike]
+    over_data[i,3]<-bowling_order[1]
+  }else if (b_current %% 2 ==0){
+    b=b+1
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_1[on_strike]
+    over_data[i,3]<-bowling_order[1]
+    
+  }else{
+    b=b+1
+    k=on_strike
+    y=off_strike
+    on_strike=y
+    off_strike=k
+    m<-batsman_1
+    n<-batsman_2
+    batsman_1<-n
+    batsman_2<-m
+    
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_1[on_strike]
+    over_data[i,3]<-bowling_order[1]
+  }
+}
+simulation<-over_data
+over_data
+j<-2
+
+
+
+while (j<=20 & w<=10 & on_strike<=11) {
+  print("Overs 2-20")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    # Simulating for First Six Overs
+    o<-on_strike
+    p<-off_strike
+    on_strike<-p
+    off_strike<-o
+    batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+    #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+    #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+    #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+    #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+    }
+    # Simulate over:
+    
+    b_current<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = 0,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    
+  }
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  i<-2
+  over_data<-data.frame(over_data,team_1[on_strike],bowling_order[j])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  while (i<=6 & w<=10 & on_strike<=11) {
+    if (b_current ==9 & next_player<= 11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[j]
+      i<-i+1
+      
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[j]
+      i<-i+1
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[j]
+      i<-i+1
+      
+    }
+    
+    
+    
+    
+  }
+  over_data
+  simulation<-rbind(simulation,over_data)
+  j<-j+1
+}
+
+
+
+
+
+# Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+# Phase By Phase Balls
+# Otherwise Works Well
+
+
+library(reticulate)
+
+source_python('format_simulation.py')
+x<-format_simulation(simulation$Simulation,team_1,bowling_order,team_1_name,team_2_name)
+x<-data.frame(x,1)
+colnames(x)[11]<-"Simulation Number"
+sim_data<-x
+
+sims<-simulation$Simulation
+sims<-data.frame(sims)
+
+for (game in 2:100) {
+  ## Markv Chain Simulation Engine- Over By Over ##:
+  print("Start")
+  print(game)
+  innings_1_data<-BallByBallTable %>% dplyr::filter(Innings==1)
+  
+  # Setting Intitial Condition of wicket
+  w<-0
+  b<-1
+  b_current<-0
+  
+  # Simulating for First Six Overs
+  
+  batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[1])
+  #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+  batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[2])
+  #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+  #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+  venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+  venue_bbb<-venue_data
+  #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  # Weightings for the Data:
+  weight_venue<-0.1
+  weight_bat<-0.6
+  weight_bowl<-0.3
+  
+  # ScoreValue Data:
+  batsman_1_data<-batsman_1_data$ScoreValue
+  batsman_1_data<-as.character(batsman_1_data)
+  
+  batsman_2_data<-batsman_2_data$ScoreValue
+  batsman_2_data<-as.character(batsman_2_data)
+  
+  bowler_data<-bowler_data$ScoreValue
+  bowler_data<-as.character(bowler_data)
+  
+  venue_data<-venue_data$ScoreValue
+  venue_data<-as.character(venue_data)
+  
+  # Transition Matrix:
+  mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  # Weighted Batsman Transition Matrix:
+  batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  
+  rowSums(batsman_1)
+  rowSums(batsman_2)
+  
+  if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+    new_batsman_1_data<-new_batsman_1_data[1:1000,]
+    batsman_1_data<-new_batsman_1_data$ScoreValue
+    
+    new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_1<-new_batsman_1@transitionMatrix
+    
+    for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+      
+      batsman_1[o,]<-new_batsman_1[o,]
+      
+    }
+  }
+  
+  if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+    new_batsman_2_data<-new_batsman_2_data[1:1000,]
+    batsman_2_data<-new_batsman_2_data$ScoreValue
+    new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_2<-new_batsman_2
+    
+    for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+      
+      batsman_2[o,]<-new_batsman_2[o,]
+      
+    }
+  }
+  
+  
+  # Simulate over:
+  b_current<-as.numeric(markovchainSequence(
+    1,
+    new("markovchain", transitionMatrix = batsman_1),
+    t0 = 0,
+    include.t0 = FALSE,
+    useRCpp = TRUE
+  ))
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  simulation<-c()
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  
+  over_data<-data.frame(over_data,team_1[1],bowling_order[1])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  # Initial Conditions:- For Adding Batsman:
+  on_strike = 1
+  off_strike = 2
+  next_player = 3
+  w=0
+  b=1
+  print("First Ball")
+  for (i in 2:6){
+    print("First Over")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[1])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      # Weightings for the Data:
+      b1_weight_venue<-0.1
+      b1_weight_bat<-0.6
+      b1_weight_bowl<-0.3
+      
+      
+      b2_weight_bat<-0.6
+      b2_weight_bowl<-0.3
+      b2_weight_venue<-0.1
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[1]
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[1]
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_1[on_strike]
+      over_data[i,3]<-bowling_order[1]
+    }
+  }
+  simulation<-over_data
+  over_data
+  j<-2
+  
+  
+  
+  while (j<=20 & w<=10 & on_strike<=11) {
+    print("Overs 2-20")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      # Simulating for First Six Overs
+      o<-on_strike
+      p<-off_strike
+      on_strike<-p
+      off_strike<-o
+      batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+      #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+      #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+      #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+      #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      # Simulate over:
+      
+      b_current<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = 0,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      
+    }
+    
+    b_current
+    over_data<-c()
+    over_data<-as.data.frame(over_data)
+    over_data[1,]<-b_current
+    over_data[,1]<-b_current
+    i<-2
+    over_data<-data.frame(over_data,team_1[on_strike],bowling_order[j])
+    colnames(over_data)<-c("Simulation","Batsman","Bowler")
+    
+    while (i<=6 & w<=10 & on_strike<=11) {
+      if (b_current ==9 & next_player<= 11){
+        b=b+1
+        w=w+1
+        on_strike=next_player
+        next_player=next_player+1
+        
+        batsman_1_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[on_strike])
+        # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+        batsman_2_data<-innings_1_data %>% dplyr::filter(Batsman==team_1[off_strike])
+        # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+        bowler_data<-innings_1_data %>% dplyr::filter(Bowler==bowling_order[j])
+        # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+        venue_data<-innings_1_data %>% dplyr::filter(VenueID==venue)
+        # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+        
+        
+        
+        # ScoreValue Data:
+        batsman_1_data<-batsman_1_data$ScoreValue
+        batsman_1_data<-as.character(batsman_1_data)
+        
+        batsman_2_data<-batsman_2_data$ScoreValue
+        batsman_2_data<-as.character(batsman_2_data)
+        
+        bowler_data<-bowler_data$ScoreValue
+        bowler_data<-as.character(bowler_data)
+        
+        venue_data<-venue_data$ScoreValue
+        venue_data<-as.character(venue_data)
+        
+        # Transition Matrix:
+        mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        # Weighted Batsman Transition Matrix:
+        batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        
+        if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+          new_batsman_1_data<-new_batsman_1_data[1:1000,]
+          batsman_1_data<-new_batsman_1_data$ScoreValue
+          new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_1<-new_batsman_1
+          
+          for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+            
+            batsman_1[o,]<-new_batsman_1[o,]
+            
+          }
+        }
+        
+        if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+          new_batsman_2_data<-new_batsman_2_data[1:1000,]
+          batsman_2_data<-new_batsman_2_data$ScoreValue
+          new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_2<-new_batsman_2
+          
+          for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+            
+            batsman_2[o,]<-new_batsman_2[o,]
+            
+          }
+        }
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE))
+        
+        b_current<-b_next
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_1[on_strike]
+        over_data[i,3]<-bowling_order[j]
+        i<-i+1
+        
+      }else if (b_current %% 2 ==0){
+        b=b+1
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_1[on_strike]
+        over_data[i,3]<-bowling_order[j]
+        i<-i+1
+        
+      }else{
+        b=b+1
+        k=on_strike
+        y=off_strike
+        on_strike=y
+        off_strike=k
+        m<-batsman_1
+        n<-batsman_2
+        batsman_1<-n
+        batsman_2<-m
+        
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_1[on_strike]
+        over_data[i,3]<-bowling_order[j]
+        i<-i+1
+        
+      }
+      
+      
+      
+      
+    }
+    over_data
+    simulation<-rbind(simulation,over_data)
+    j<-j+1
+  }
+  
+  
+  
+  
+  
+  # Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+  # Phase By Phase Balls
+  # Otherwise Works Well
+  
+  
+  library(reticulate)
+  
+  source_python('format_simulation.py')
+  x<-format_simulation(simulation$Simulation,team_1,bowling_order,team_1_name,team_2_name)
+  x<-data.frame(x,game)
+  colnames(x)[11]<-"Simulation Number"
+  
+  sim_data<-rbind(sim_data,x)
+  
+  # sims_bbb_data<-rbind(sims_bbb_data,simulation)
+}
+sim_scores<-sim_data %>% dplyr::select(`Simulation Number`,batting_runs_scored,wickets_taken)
+
+sim_scores<-sim_scores %>% group_by(`Simulation Number`) %>% summarise_each(sum)
+
+hist(sim_scores$batting_runs_scored)
+mean(sim_scores$batting_runs_scored)
+hist(sim_scores$wickets_taken)
+mean(sim_scores$wickets_taken)
+
+batting<-sim_data %>% dplyr::select(-`Simulation Number`,-team_id) 
+batting<-batting %>% group_by(player_id)%>% filter(batting_position!=0) %>%  summarise_each(mean)
+bowling<-sim_data %>% dplyr::select(-`Simulation Number`,-team_id) 
+bowling<-bowling %>% group_by(player_id) %>%  summarise_each(mean) %>% filter(batting_position==0) %>% dplyr::select(player_id,balls_bowled_legal,wickets_taken,bowl_runs_conceded)
+
+##########################################################################################################################################################################################
+## SECOND INNINGS SIMULATION ##
+##########################################################################################################################################################################################
+### Second Innings Simulation Continue ###:---------------------------------------------------------------------------------
+first_innings_score<-median(sim_scores$batting_runs_scored)
+first_innings_score<-round(first_innings_score,digits = 0)
+
+
+team_scores<-cricket_team_stats_table(startseason = 2008)
+team_scores<-team_scores %>% dplyr::select(MatchID,TeamID,Innings1Runs)
+
+first_innings_data<-game_table %>% dplyr::select(MatchID,FirstBattingTeamID)
+colnames(first_innings_data)[2]<-"TeamID"
+
+data_innings<-merge(first_innings_data,team_scores)
+data_innings<-data_innings %>% distinct()
+data_innings<-data_innings %>% dplyr::select(MatchID,Innings1Runs)
+
+second_innings_data<-BallByBallTable %>% filter(Innings==2)
+second_innings_data<-left_join(second_innings_data,data_innings)
+
+# Filter Dataset Based on the Runs Scored:
+second_innings_data<-second_innings_data %>% filter(InningsTarget %in% seq(from=first_innings_score-30, to= first_innings_score + 30))
+
+
+## Markv Chain Simulation Engine- Over By Over ##:
+print("Start")
+
+# Setting Intitial Condition of wicket
+w<-0
+b<-1
+b_current<-0
+
+# Simulating for First Six Overs
+
+batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[1])
+#batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[2])
+#batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+
+bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+#bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+venue_bbb<-venue_data
+
+
+# ScoreValue Data:
+batsman_1_data<-batsman_1_data$ScoreValue
+batsman_1_data<-as.character(batsman_1_data)
+
+batsman_2_data<-batsman_2_data$ScoreValue
+batsman_2_data<-as.character(batsman_2_data)
+
+bowler_data<-bowler_data$ScoreValue
+bowler_data<-as.character(bowler_data)
+
+venue_data<-venue_data$ScoreValue
+venue_data<-as.character(venue_data)
+
+# Transition Matrix:
+mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+
+# Weighted Batsman Transition Matrix:
+batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+
+rowSums(batsman_1)
+rowSums(batsman_2)
+
+if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+  new_batsman_1_data<-new_batsman_1_data[1:1000,]
+  batsman_1_data<-new_batsman_1_data$ScoreValue
+  
+  new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_1<-new_batsman_1@transitionMatrix
+  
+  for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+    
+    batsman_1[o,]<-new_batsman_1[o,]
+    
+  }
+  for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+    
+    batsman_1<-batsman_1[-k,]
+    
+  }
+}
+
+if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+  new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+  new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+  new_batsman_2_data<-new_batsman_2_data[1:1000,]
+  batsman_2_data<-new_batsman_2_data$ScoreValue
+  new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  new_batsman_2<-new_batsman_2
+  
+  for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+    
+    batsman_2[o,]<-new_batsman_2[o,]
+    
+  }
+  for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+    
+    batsman_2<-batsman_2[-k,]
+    
+  }
+}
+
+
+# Simulate over:
+b_current<-as.numeric(markovchainSequence(
+  1,
+  new("markovchain", transitionMatrix = batsman_1),
+  t0 = 0,
+  include.t0 = FALSE,
+  useRCpp = TRUE
+))
+
+b_current
+over_data<-c()
+over_data<-as.data.frame(over_data)
+simulation<-c()
+over_data[1,]<-b_current
+over_data[,1]<-b_current
+
+over_data<-data.frame(over_data,team_2[1],bowling_order_2[1])
+colnames(over_data)<-c("Simulation","Batsman","Bowler")
+
+# Initial Conditions:- For Adding Batsman:
+on_strike = 1
+off_strike = 2
+next_player = 3
+w=0
+b=1
+print("First Ball")
+for (i in 2:6){
+  print("First Over")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+    # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+    # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+    # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+    # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1<-batsman_1[-k,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2<-batsman_2[-k,]
+        
+      }
+    }
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE))
+    
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_2[on_strike]
+    over_data[i,3]<-bowling_order_2[1]
+  }else if (b_current %% 2 ==0){
+    b=b+1
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_2[on_strike]
+    over_data[i,3]<-bowling_order_2[1]
+    
+  }else{
+    b=b+1
+    k=on_strike
+    y=off_strike
+    on_strike=y
+    off_strike=k
+    m<-batsman_1
+    n<-batsman_2
+    batsman_1<-n
+    batsman_2<-m
+    
+    b_next<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = b_current,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    b_current<-b_next
+    
+    over_data[i,1]<-b_current
+    over_data[i,2]<-team_2[on_strike]
+    over_data[i,3]<-bowling_order_2[1]
+  }
+}
+simulation<-over_data
+over_data
+j<-2
+
+
+
+while (j<=20 & w<=10 & on_strike<=11) {
+  print("Overs 2-20")
+  if (b_current ==9 & next_player<=11){
+    b=b+1
+    w=w+1
+    on_strike=next_player
+    next_player=next_player+1
+    
+    # Simulating for First Six Overs
+    o<-on_strike
+    p<-off_strike
+    on_strike<-p
+    off_strike<-o
+    batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+    #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+    batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+    #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+    #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+    venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+    #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+    
+    
+    # ScoreValue Data:
+    batsman_1_data<-batsman_1_data$ScoreValue
+    batsman_1_data<-as.character(batsman_1_data)
+    
+    batsman_2_data<-batsman_2_data$ScoreValue
+    batsman_2_data<-as.character(batsman_2_data)
+    
+    bowler_data<-bowler_data$ScoreValue
+    bowler_data<-as.character(bowler_data)
+    
+    venue_data<-venue_data$ScoreValue
+    venue_data<-as.character(venue_data)
+    
+    # Transition Matrix:
+    mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    # Weighted Batsman Transition Matrix:
+    batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+    
+    if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+      new_batsman_1_data<-new_batsman_1_data[1:1000,]
+      batsman_1_data<-new_batsman_1_data$ScoreValue
+      new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_1<-new_batsman_1@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1[o,]<-new_batsman_1[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+        
+        batsman_1<-batsman_1[-k,]
+        
+      }
+    }
+    
+    if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+      new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+      new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+      new_batsman_2_data<-new_batsman_2_data[1:1000,]
+      batsman_2_data<-new_batsman_2_data$ScoreValue
+      new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      new_batsman_2<-new_batsman_2@transitionMatrix
+      
+      for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2[o,]<-new_batsman_2[o,]
+        
+      }
+      for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+        
+        batsman_2<-batsman_2[-k,]
+        
+      }
+    }
+    # Simulate over:
+    
+    b_current<-as.numeric(markovchainSequence(
+      1,
+      new("markovchain", transitionMatrix = batsman_1),
+      t0 = 0,
+      include.t0 = FALSE,
+      useRCpp = TRUE
+    ))
+    
+  }
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  i<-2
+  over_data<-data.frame(over_data,team_2[on_strike],bowling_order_2[j])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  while (i<=6 & w<=10 & on_strike<=11) {
+    if (b_current ==9 & next_player<= 11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+        for (k in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1<-batsman_1[-k,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+        for (k in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2<-batsman_2[-k,]
+          
+        }
+      }
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[j]
+      i<-i+1
+      
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[j]
+      i<-i+1
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[j]
+      i<-i+1
+      
+    }
+    
+    
+    
+    
+  }
+  over_data
+  simulation<-rbind(simulation,over_data)
+  j<-j+1
+}
+
+
+
+
+
+# Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+# Phase By Phase Balls
+# Otherwise Works Well
+
+
+library(reticulate)
+
+source_python('format_simulation.py')
+
+x<-format_simulation(simulation$Simulation,team_2,bowling_order_2,team_2_name,team_1_name)
+x<-data.frame(x,1)
+colnames(x)[11]<-"Simulation Number"
+sim_data_2<-x
+
+for (game in 2:100) {
+  ## Markv Chain Simulation Engine- Over By Over ##:
+  print("Start")
+  print(game)
+  
+  # Setting Intitial Condition of wicket
+  w<-0
+  b<-1
+  b_current<-0
+  
+  # Simulating for First Six Overs
+  
+  batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[1])
+  #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+  batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[2])
+  #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+  #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+  venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+  venue_bbb<-venue_data
+  #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+  
+  # Weightings for the Data:
+  weight_venue<-0.1
+  weight_bat<-0.6
+  weight_bowl<-0.3
+  
+  # ScoreValue Data:
+  batsman_1_data<-batsman_1_data$ScoreValue
+  batsman_1_data<-as.character(batsman_1_data)
+  
+  batsman_2_data<-batsman_2_data$ScoreValue
+  batsman_2_data<-as.character(batsman_2_data)
+  
+  bowler_data<-bowler_data$ScoreValue
+  bowler_data<-as.character(bowler_data)
+  
+  venue_data<-venue_data$ScoreValue
+  venue_data<-as.character(venue_data)
+  
+  # Transition Matrix:
+  mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+  
+  # Weighted Batsman Transition Matrix:
+  batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+  
+  rowSums(batsman_1)
+  
+  if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+    new_batsman_1_data<-new_batsman_1_data[1:1000,]
+    batsman_1_data<-new_batsman_1_data$ScoreValue
+    new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_1<-new_batsman_1
+    
+    for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+      
+      batsman_1[o,]<-new_batsman_1[o,]
+      
+    }
+    
+  }
+  
+  if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+    new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+    new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+    new_batsman_2_data<-new_batsman_2_data[1:1000,]
+    batsman_2_data<-new_batsman_2_data$ScoreValue
+    new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+    
+    new_batsman_2<-new_batsman_2
+    
+    for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+      
+      batsman_2[o,]<-new_batsman_2[o,]
+      
+    }
+    
+  }
+  
+  batsman_1<-markovchainFit(batsman_1_data)$estimate
+  batsman_1<-batsman_1@transitionMatrix
+  
+  batsman_2<-markovchainFit(batsman_2_data)$estimate
+  batsman_2<-batsman_2@transitionMatrix
+  
+  # Simulate over:
+  b_current<-as.numeric(markovchainSequence(
+    1,
+    new("markovchain", transitionMatrix = batsman_1),
+    t0 = 0,
+    include.t0 = FALSE,
+    useRCpp = TRUE
+  ))
+  
+  b_current
+  over_data<-c()
+  over_data<-as.data.frame(over_data)
+  simulation<-c()
+  over_data[1,]<-b_current
+  over_data[,1]<-b_current
+  
+  over_data<-data.frame(over_data,team_2[1],bowling_order_2[1])
+  colnames(over_data)<-c("Simulation","Batsman","Bowler")
+  
+  # Initial Conditions:- For Adding Batsman:
+  on_strike = 1
+  off_strike = 2
+  next_player = 3
+  w=0
+  b=1
+  print("First Ball")
+  for (i in 2:6){
+    print("First Over")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+      # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+      # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[1])
+      # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+      # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      
+      batsman_1<-markovchainFit(batsman_1_data)$estimate
+      batsman_1<-batsman_1@transitionMatrix
+      
+      batsman_2<-markovchainFit(batsman_2_data)$estimate
+      batsman_2<-batsman_2@transitionMatrix
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE))
+      
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[1]
+    }else if (b_current %% 2 ==0){
+      b=b+1
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[1]
+      
+    }else{
+      b=b+1
+      k=on_strike
+      y=off_strike
+      on_strike=y
+      off_strike=k
+      m<-batsman_1
+      n<-batsman_2
+      batsman_1<-n
+      batsman_2<-m
+      
+      b_next<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = b_current,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      b_current<-b_next
+      
+      over_data[i,1]<-b_current
+      over_data[i,2]<-team_2[on_strike]
+      over_data[i,3]<-bowling_order_2[1]
+    }
+  }
+  simulation<-over_data
+  over_data
+  j<-2
+  
+  while (j<=20 & w<=10 & on_strike<=11) {
+    print("Overs 2-20")
+    if (b_current ==9 & next_player<=11){
+      b=b+1
+      w=w+1
+      on_strike=next_player
+      next_player=next_player+1
+      
+      # Simulating for First Six Overs
+      o<-on_strike
+      p<-off_strike
+      on_strike<-p
+      off_strike<-o
+      batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+      #batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+      batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+      #batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+      #bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+      venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+      #venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+      
+      
+      # ScoreValue Data:
+      batsman_1_data<-batsman_1_data$ScoreValue
+      batsman_1_data<-as.character(batsman_1_data)
+      
+      batsman_2_data<-batsman_2_data$ScoreValue
+      batsman_2_data<-as.character(batsman_2_data)
+      
+      bowler_data<-bowler_data$ScoreValue
+      bowler_data<-as.character(bowler_data)
+      
+      venue_data<-venue_data$ScoreValue
+      venue_data<-as.character(venue_data)
+      
+      # Transition Matrix:
+      mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+      
+      # Weighted Batsman Transition Matrix:
+      batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+      
+      if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+        new_batsman_1_data<-new_batsman_1_data[1:1000,]
+        batsman_1_data<-new_batsman_1_data$ScoreValue
+        new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_1<-new_batsman_1@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+          
+          batsman_1[o,]<-new_batsman_1[o,]
+          
+        }
+      }
+      
+      if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+        new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+        new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+        batsman_2_data<-new_batsman_2_data$ScoreValue
+        new_batsman_2_data<-new_batsman_2_data[1:1000,]
+        new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        new_batsman_2<-new_batsman_2@transitionMatrix
+        
+        for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+          
+          batsman_2[o,]<-new_batsman_2[o,]
+          
+        }
+      }
+      
+      batsman_1<-markovchainFit(batsman_1_data)$estimate
+      batsman_1<-batsman_1@transitionMatrix
+      
+      batsman_2<-markovchainFit(batsman_2_data)$estimate
+      batsman_2<-batsman_2@transitionMatrix
+      
+      # Simulate over:
+      
+      b_current<-as.numeric(markovchainSequence(
+        1,
+        new("markovchain", transitionMatrix = batsman_1),
+        t0 = 0,
+        include.t0 = FALSE,
+        useRCpp = TRUE
+      ))
+      
+    }
+    
+    b_current
+    over_data<-c()
+    over_data<-as.data.frame(over_data)
+    over_data[1,]<-b_current
+    over_data[,1]<-b_current
+    i<-2
+    over_data<-data.frame(over_data,team_2[on_strike],bowling_order_2[j])
+    colnames(over_data)<-c("Simulation","Batsman","Bowler")
+    
+    while (i<=6 & w<=10 & on_strike<=11) {
+      if (b_current ==9 & next_player<= 11){
+        b=b+1
+        w=w+1
+        on_strike=next_player
+        next_player=next_player+1
+        
+        batsman_1_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[on_strike])
+        # batsman_1_data<-batsman_1_data %>% dplyr::filter(SequenceID %in% 1:36)
+        batsman_2_data<-second_innings_data %>% dplyr::filter(Batsman==team_2[off_strike])
+        # batsman_2_data<-batsman_2_data %>% dplyr::filter(SequenceID %in% 1:36)
+        bowler_data<-second_innings_data %>% dplyr::filter(Bowler==bowling_order_2[j])
+        # bowler_data<-bowler_data %>% dplyr::filter(SequenceID %in% 1:36)
+        venue_data<-second_innings_data %>% dplyr::filter(VenueID==venue)
+        # venue_data<-venue_data %>% dplyr::filter(SequenceID %in% 1:36)
+        
+        
+        
+        # ScoreValue Data:
+        batsman_1_data<-batsman_1_data$ScoreValue
+        batsman_1_data<-as.character(batsman_1_data)
+        
+        batsman_2_data<-batsman_2_data$ScoreValue
+        batsman_2_data<-as.character(batsman_2_data)
+        
+        bowler_data<-bowler_data$ScoreValue
+        bowler_data<-as.character(bowler_data)
+        
+        venue_data<-venue_data$ScoreValue
+        venue_data<-as.character(venue_data)
+        
+        # Transition Matrix:
+        mcX_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_bowler<-markovchainFit(bowler_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        mcX_venue<-markovchainFit(venue_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+        
+        # Weighted Batsman Transition Matrix:
+        batsman_1<-weight_bat*mcX_batsman_1@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        batsman_2<-weight_bat*mcX_batsman_2@transitionMatrix + weight_bowl*mcX_bowler@transitionMatrix+weight_venue*mcX_venue@transitionMatrix
+        
+        if(as.numeric(length(batsman_1_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_1_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_1_data<-new_batsman_1_data %>% filter(SequenceID>=b)
+          batsman_1_data<-new_batsman_1_data$ScoreValue
+          new_batsman_1_data<-new_batsman_1_data[1:1000,]
+          new_batsman_1<-markovchainFit(batsman_1_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_1<-new_batsman_1
+          
+          for (o in which(as.data.frame(rowSums(batsman_1))!=1)) {
+            
+            batsman_1[o,]<-new_batsman_1[o,]
+            
+          }
+        }
+        
+        if(as.numeric(length(batsman_2_data))<=100 | as.numeric(length(bowler_data))<=250){
+          new_batsman_2_data<-venue_bbb %>% filter(InningsWickets>=w)
+          new_batsman_2_data<-new_batsman_2_data %>% filter(SequenceID>=b)
+          new_batsman_2_data<-new_batsman_2_data[1:1000,]
+          batsman_2_data<-new_batsman_2_data$ScoreValue
+          new_batsman_2<-markovchainFit(batsman_2_data,possibleStates = c("0","1","2","4","6","9"))$estimate
+          
+          new_batsman_2<-new_batsman_2
+          
+          for (o in which(as.data.frame(rowSums(batsman_2))!=1)) {
+            
+            batsman_2[o,]<-new_batsman_2[o,]
+            
+          }
+        }
+        
+        batsman_1<-markovchainFit(batsman_1_data)$estimate
+        batsman_1<-batsman_1@transitionMatrix
+        
+        batsman_2<-markovchainFit(batsman_2_data)$estimate
+        batsman_2<-batsman_2@transitionMatrix
+        
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE))
+        
+        b_current<-b_next
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_2[on_strike]
+        over_data[i,3]<-bowling_order_2[j]
+        i<-i+1
+        
+      }else if (b_current %% 2 ==0){
+        b=b+1
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_2[on_strike]
+        over_data[i,3]<-bowling_order_2[j]
+        i<-i+1
+        
+      }else{
+        b=b+1
+        k=on_strike
+        y=off_strike
+        on_strike=y
+        off_strike=k
+        m<-batsman_1
+        n<-batsman_2
+        batsman_1<-n
+        batsman_2<-m
+        
+        b_next<-as.numeric(markovchainSequence(
+          1,
+          new("markovchain", transitionMatrix = batsman_1),
+          t0 = b_current,
+          include.t0 = FALSE,
+          useRCpp = TRUE
+        ))
+        b_current<-b_next
+        
+        over_data[i,1]<-b_current
+        over_data[i,2]<-team_2[on_strike]
+        over_data[i,3]<-bowling_order_2[j]
+        i<-i+1
+        
+      }
+      
+      
+      
+      
+    }
+    over_data
+    simulation<-rbind(simulation,over_data)
+    j<-j+1
+  }
+  
+  # Things to Fix-> Firstly Tail Enders For non-established Batsman struggles to create markov chain transition matrix
+  # Phase By Phase Balls
+  # Otherwise Works Well
+  
+  
+  library(reticulate)
+  
+  source_python('format_simulation.py')
+  
+  
+  x<-format_simulation(simulation$Simulation,team_2,bowling_order_2,team_2_name,team_1_name)
+  x<-data.frame(x,game)
+  colnames(x)[11]<-"Simulation Number"
+  sim_data_2<-rbind(sim_data_2,x)
+}
+
+
+
+
+
+sim_scores_2<-sim_data_2 %>% dplyr::select(`Simulation Number`,batting_runs_scored,wickets_taken)
+
+sim_scores_2<-sim_scores_2 %>% group_by(`Simulation Number`) %>% summarise_each(sum)
+
+hist(sim_scores_2$batting_runs_scored)
+mean(sim_scores_2$batting_runs_scored)
+hist(sim_scores_2$wickets_taken)
+mean(sim_scores_2$wickets_taken)
+
+batting_2<-sim_data_2 %>% dplyr::select(-`Simulation Number`,-team_id) 
+batting_2<-batting_2 %>% group_by(player_id)%>% filter(batting_position!=0) %>%  summarise_each(mean)
+bowling_2<-sim_data_2 %>% dplyr::select(-`Simulation Number`,-team_id) 
+bowling_2<-bowling_2 %>% group_by(player_id) %>%  summarise_each(mean) %>% filter(batting_position==0) %>% dplyr::select(player_id,balls_bowled_legal,wickets_taken,bowl_runs_conceded)
+
+########################################################################################################################################################################################
+## COMBINING FIRST AND SECOND INNINGS DATA TO GET TOTAL DATASET ##
+########################################################################################################################################################################################
+sim_data<-sim_data[,1:11]
+sim_data<-data.frame(sim_data,1,paste0(team_1_name," batting first"))
+colnames(sim_data)[12:13]<-c("Innings","team_batting_first")
+
+sim_data_2<-sim_data_2[,1:11]
+sim_data_2<-data.frame(sim_data_2,2,paste0(team_1_name," batting first"))
+colnames(sim_data_2)[12:13]<-c("Innings","team_batting_first")
+
+total_dataset_2<-rbind(sim_data,sim_data_2)
+total_dataset_2<-data.frame(total_dataset_2,paste0(team_2_name," vs ",team_1_name))
+colnames(total_dataset_2)[14]<-"Match"
+
+########################################################################################################################################################################################
+## Total Dataset Combinations ##
+########################################################################################################################################################################################
+total_dataset<-rbind(total_dataset_1,total_dataset_2)
+total_dataset<-data.frame(total_dataset,matchid)
+colnames(total_dataset)[15]<-c("MatchID")
+colnames(CPlayerTable)<-c("player_id","PlayerID")
+total_dataset<-left_join(total_dataset,CPlayerTable)
+total_dataset3 <- total_dataset
+
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+
+CTeamTable      <- dbGetQuery(conn, "select * from cricketdb.team") %>% distinct()
+
+CTeamTable<-CTeamTable %>% dplyr::select(team,teamid)
+colnames(CTeamTable)[1]<-"team_id"
+total_dataset<-left_join(total_dataset,CTeamTable)
+
+sims_bbb_data<-data.frame(sims_bbb_data,rep(1:120,5))
+colnames(sims_bbb_data)[4]<-"Balls"
+
+sims_bbb_data_average<-sims_bbb_data %>% dplyr::select(Balls,Simulation) %>% group_by(Balls) %>% summarise_each(mean)
+sims_bbb_data_average<-sims_bbb_data_average %>% dplyr::mutate(Score=cumsum(Simulation))
+
+plot(sims_bbb_data_average$Balls,sims_bbb_data_average$Score)
+
+
+########################################################################################################################################################################################
+# Connecting to the Database
+pw                <- "E3)keC1ck3tDB_p&ssw-rd"
+drv               <- dbDriver(drvName = "PostgreSQL")
+host              <- "crjt9cjjjmisut.czghca63vlae.ap-southeast-2.rds.amazonaws.com"
+conn              <- dbConnect(drv = drv, dbname = "cricket", host = host, port = 3306, user = "cricket", password = pw)
+
+dbRemoveTable(conn, c("cricketdb","scorecard_simulationsV2"))
+dbWriteTable(conn, c("cricketdb","scorecard_simulationsV2"), total_dataset3,row.names=FALSE,append=TRUE)
+
+# Aggregated Table:
+batting<-total_dataset %>% dplyr::select(-Simulation.Number,-Innings) 
+batting<-batting %>% group_by(player_id,PlayerID,team_id,teamid,team_batting_first,Match,MatchID)%>% filter(batting_position!=0) %>%  summarise_each(mean)
+batting<-batting %>% dplyr::select(-balls_bowled_legal,-wickets_taken,-bowl_runs_conceded)
+bowling<-total_dataset %>% dplyr::select(-Simulation.Number,-Innings)  
+bowling<-bowling %>% filter(batting_position==0)  
+bowling<-bowling%>% group_by(player_id,PlayerID,team_id,teamid,team_batting_first,Match,MatchID) %>%  summarise_each(mean) 
+bowling<- subset(bowling, select = c(player_id, team_batting_first, balls_bowled_legal,wickets_taken,bowl_runs_conceded))
+
+aggregated_data<- left_join(batting, bowling)
+
+aggregated_data[is.na(aggregated_data)] <- 0
+aggregated_data<-aggregated_data %>% distinct()
+
+aggregated_data2 <- aggregated_data
+
+aggregated_data2[2,] <- unique(aggregated_data2[2,])
+
+#################################################################################################################
+dbRemoveTable(conn, c("cricketdb","scorecard_simulations_aggregated_data_V2"))
+dbWriteTable(conn, c("cricketdb","scorecard_simulations_aggregated_data_V2"), aggregated_data2,row.names=FALSE,append=TRUE)
+
